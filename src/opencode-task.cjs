@@ -48,6 +48,23 @@ class OpenCodeTask {
     const resolved = path.posix.resolve(this.client.workspace, value);
     return resolved === this.client.workspace || resolved.startsWith(this.client.workspace + '/');
   }
+  editPatterns(input, request) {
+    // Pinned OpenCode uses worktree-relative patterns: non-Git worktree '/' is
+    // not the selected workspace. Bind the running edit input and its metadata
+    // first; normalize only this exact target for the owner's unchanged policy.
+    // This is lexical scope, not a filesystem/symlink or execution-authority proof.
+    const clean = value => bounded(value, 4096) && value.length > 0 &&
+      !/[\\?*\[\]{}\x00-\x1f\x7f]/.test(value) && !value.split('/').includes('..');
+    const target = request.metadata.filepath;
+    if (!clean(input.filePath) || !clean(target) || !path.posix.isAbsolute(target) ||
+        path.posix.resolve(target) !== target || !this.within(target) ||
+        path.posix.resolve(this.client.workspace, input.filePath) !== target ||
+        request.patterns.length !== 1 || !clean(request.patterns[0])) return null;
+    const relative = path.posix.relative(this.client.workspace, target);
+    const spellings = [relative, `./${relative}`, target, path.posix.relative('/', target)];
+    if (!relative || !spellings.includes(request.patterns[0])) return null;
+    return [relative];
+  }
   toolKey(session, message, call) { return `${session}/${message}/${call}`; }
   get diagnostics() { return JSON.parse(JSON.stringify(this.taskDiagnostic)); }
   observeTool(key, part) {
@@ -82,18 +99,20 @@ class OpenCodeTask {
         const tool = this.tools.get(this.toolKey(request.sessionID, request.tool.messageID, request.tool.callID));
         if (tool && tool.state.status === 'running' && record(tool.state.input)) {
           const input = tool.state.input;
-          const command = request.permission === 'bash' ? input.command : `Edit ${request.patterns.join(', ')}`;
+          const singleEdit = request.permission === 'edit' && tool.tool === 'edit';
+          const patterns = singleEdit ? this.editPatterns(input, request) : request.patterns;
+          const command = request.permission === 'bash' ? input.command : `Edit ${(patterns ?? request.patterns).join(', ')}`;
           const directory = input.workdir ?? this.client.workspace;
           const eligible = request.permission === 'bash'
             ? tool.tool === 'bash' && bounded(command, 8192) && command.trim() && this.within(directory)
-            : ['edit', 'write', 'apply_patch', 'multiedit'].includes(tool.tool) &&
+            : singleEdit ? patterns !== null : ['write', 'apply_patch', 'multiedit'].includes(tool.tool) &&
               request.patterns.every(value => this.within(value) && !/[?*\[\]{}]/.test(value)) &&
               (request.metadata.filepath === undefined || this.within(request.metadata.filepath));
           if (eligible && !this.stopped) {
             this.taskDiagnostic.permissions.forwarded++;
             let timer;
             const decision = Promise.resolve().then(() => this.approval({
-              permission: request.permission, patterns: [...request.patterns], metadata: request.metadata,
+              permission: request.permission, patterns: [...patterns], metadata: request.metadata,
               command, directory, sessionID: request.sessionID, child: request.sessionID !== this.session,
             })).then(value => value === true, () => false);
             try {
