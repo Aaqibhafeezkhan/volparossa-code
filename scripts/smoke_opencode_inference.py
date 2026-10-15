@@ -820,6 +820,28 @@ def qemu_command(tools, scratch, firmware=None, model_profile=MODEL, inference_b
         '-sandbox', 'on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny']
 
 
+def start_qemu_memory(group, name, manifest, backend):
+    if backend != 'llama_cpp_bf16_v1':
+        return None
+    try:
+        observer = module(ROOT / 'scripts/opencode_qemu_memory.py', 'opencode_qemu_memory')
+        source = dict(code_revision=manifest['code_base_revision'], core_revision=manifest['core_revision'],
+                      model_profile=manifest['model_profile'], inference_backend=backend)
+        return observer, observer.Observer(group, name, source)
+    except Exception:
+        # Diagnostics never change admission, the primary result or cleanup.
+        return None
+
+
+def finish_qemu_memory(observation, output):
+    if observation is not None:
+        try:
+            observer, owner = observation
+            record(output / 'qemu-memory.json', observer.validate(owner.finish()))
+        except Exception:
+            pass  # Missing diagnostics are unknown, never successful execution.
+
+
 def validate_bundle(path, model_profile=MODEL, inference_backend='torch'):
     profile = trial_profile(model_profile, inference_backend)
     canonical(path)
@@ -895,6 +917,7 @@ def execute(args):
     os.chmod(scratch, 0o700)
     name = 'volparossa-opencode-vm-' + uuid.uuid4().hex[:12] + '.service'
     launched, status = False, 1
+    qemu_memory = None
     receipt = dict(version=1, kind='opencode-inference-vm', passed=False, phase='prepare', failure=None,
         core_revision=profile['core_revision'], model_profile=profile['model_profile'],
         bundle_sha256=digest(args.bundle), bundle_bytes=args.bundle.stat().st_size,
@@ -977,6 +1000,7 @@ def execute(args):
         receipt['qemu_swap_max'] = int((group_path / 'memory.swap.max').read_text())
         require(receipt['qemu_memory_max'] == profile['qemu_memory_bytes']
                 and receipt['qemu_swap_max'] == 0, 'qemu_resource_limits')
+        qemu_memory = start_qemu_memory(group, name, manifest, backend)
         print(json.dumps({'phase': 'guest-boot', 'qemu_pid': receipt['qemu_pid'], 'unit': name}), flush=True)
         for _ in range(180):
             if ssh('true', timeout=10, check=False).returncode == 0:
@@ -1017,6 +1041,8 @@ def execute(args):
     finally:
         for sig, previous in old_signals.items():
             signal.signal(sig, previous)
+        # Stop/join the read-only observer before poweroff, unit stop or scratch removal.
+        finish_qemu_memory(qemu_memory, args.output)
         if launched:
             try:
                 with (scratch / 'qemu.stderr').open('rb') as stream:

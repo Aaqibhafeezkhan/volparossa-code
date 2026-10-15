@@ -32,7 +32,8 @@ TOOLS = {'qemu-system-x86_64': ('/usr/bin/qemu-system-x86_64', 'qemu-system-x86'
          'vgabios-stdvga.bin': ('/usr/share/seabios/vgabios-stdvga.bin', 'seabios')}
 EXPORTS = ('ci-source.json', 'ci-host-tools.json', 'ci-preflight.json', 'ci-build.json',
            'ci-inputs.json', 'ci-build-cleanup.json', 'ci-host-cleanup.json')
-VM_EXPORTS = ('vm-result.json', 'guest-result.json', 'host-state-before.json', 'host-state-after.json')
+VM_EXPORTS = ('vm-result.json', 'guest-result.json', 'host-state-before.json', 'host-state-after.json',
+              'qemu-memory.json')
 
 
 def require(value, reason):
@@ -235,12 +236,22 @@ def export():
             info = source.lstat()
             require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
                     and not info.st_mode & 0o077 and info.st_size <= 256 * 1024, 'closed_receipt_file')
-            value = json.loads(source.read_bytes())
+            if name == 'qemu-memory.json':
+                observer = module(ROOT / 'scripts/opencode_qemu_memory.py', 'ci_qemu_memory')
+                value = observer.load(source)
+                sources = json.loads((BUILD / 'ci-source.json').read_bytes())
+                vm = json.loads((BUILD / 'ci-vm/vm-result.json').read_bytes())
+                require(value['source'] == {key: sources[key] for key in value['source']}
+                        and all(value['source'][key] == vm[key] for key in
+                                ('core_revision', 'model_profile', 'inference_backend')), 'qemu_memory_source')
+            else:
+                value = json.loads(source.read_bytes())
             require(type(value) is dict, 'closed_receipt_object')
             # Pretty-printing must not expand a bounded input beyond the same
             # public-receipt ceiling. No raw logs or additional paths are added.
             encoded = json.dumps(value, sort_keys=True, indent=2, allow_nan=False).encode() + b'\n'
-            require(len(encoded) <= 256 * 1024, 'closed_receipt_file')
+            require(len(encoded) <= (observer.MAX_JSON if name == 'qemu-memory.json' else 256 * 1024),
+                    'closed_receipt_file')
             record(output / name, value)
 
 
