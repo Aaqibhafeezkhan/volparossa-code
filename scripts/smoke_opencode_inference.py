@@ -298,7 +298,7 @@ def pack(args):
     files = {f'code/{path.relative_to(ROOT)}': path for path in sorted((ROOT / 'src').glob('*.cjs'))}
     names = ['src/opencode-cooperative-tool.js', 'scripts/opencode_session.py', 'scripts/opencode_session.cjs',
              'scripts/smoke_opencode_inference.cjs', 'scripts/smoke_opencode_inference.py',
-             'scripts/opencode_native_cpu.py',
+             'scripts/opencode_native_cpu.py', 'scripts/opencode_task_holder.py',
              'third_party/opencode.json', 'third_party/opencode-LICENSE.txt',
              'third_party/opencode-build-tools.json', 'patches/opencode-no-runtime-installs.patch',
              'LICENSE', 'THIRD_PARTY_LICENSES.md']
@@ -535,6 +535,82 @@ def start(name, command, limit, seconds, public_source_build=False):
          '--setenv=RUST_LOG=off,volparossa::compute::private_diagnostic=debug', '--setenv=NO_COLOR=1', *command])
 
 
+def run_native_task(profile, backend, report):
+    holder = module(INPUT / 'code/scripts/opencode_task_holder.py', 'opencode_task_holder_inputs')
+    nonce, started = os.urandom(32).hex(), time.monotonic_ns()
+    deadline = started + 2550 * 1_000_000_000
+    owner_deadline = started + 2565 * 1_000_000_000
+    path = BASE / holder.CONTROL
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(path))
+        path.chmod(0o600)
+        listener.listen(1)
+        start(TASK_UNIT, [sys.executable, '-B', str(INPUT / 'code/scripts/opencode_task_holder.py'),
+              '--deadline-monotonic-ns', str(deadline), '--handshake-nonce', nonce,
+              '--parent-pid', str(os.getpid()), '--inference-backend', backend], 768 * 1024**2, 2550)
+        while True:
+            listener.settimeout(min(2.0, holder.remaining(deadline)))
+            try:
+                channel, _ = listener.accept()
+                break
+            except TimeoutError:
+                state = properties(TASK_UNIT)
+                require(state.get('ActiveState') == 'active' and state.get('SubState') == 'running',
+                        'task_holder_ended_before_ready')
+        with channel:
+            state = properties(TASK_UNIT)
+            require(state.get('ActiveState') == 'active' and state.get('SubState') == 'running'
+                    and re.fullmatch('[0-9]{1,10}', state.get('MainPID', '')), 'task_holder_not_running')
+            pid = int(state['MainPID'])
+            holder.peer(channel, pid)
+            ready = holder.decode_ready(holder.receive_frame(channel, deadline), nonce)
+            status = ready['child_returncode']
+            # Preserve the actual Node status even if later observation fails;
+            # the holder's systemd terminal status is checked separately below.
+            report['task_exit_status'] = abs(status)
+            primary = None
+            try:
+                if ready['receipt_sha256'] is not None:
+                    raw = holder.receipt_bytes(BASE / 'task.json')
+                    require(hashlib.sha256(raw).hexdigest() == ready['receipt_sha256'], 'task_receipt_changed')
+                    report['task'] = json.loads(raw)
+                    validate_task_selection(report['task'], profile, backend)
+                else:
+                    require(status != 0, 'task_holder_missing_success_receipt')
+                group = holder.Group(cgroup(TASK_UNIT), pid)
+                try:
+                    report['core_memory'] = memory(CORE_UNIT)
+                    report['task_memory'] = group.memory()
+                    require(report['task_memory']['maximum'] == 768 * 1024**2, 'task_memory_limit')
+                    for field in ('core_memory', 'task_memory'):
+                        require(report[field]['swap'] == report[field]['oom_kill'] == 0, 'resource_violation')
+                finally:
+                    group.close()
+            except BaseException as error:
+                primary = error
+                raise
+            finally:
+                # Release is cleanup, never permission to accept a bad receipt.
+                # Its failure must not replace the original observation failure.
+                try:
+                    holder.send_frame(channel, holder.binding('release', nonce, status,
+                                      ready['receipt_sha256']), deadline)
+                except (OSError, ValueError):
+                    if primary is None:
+                        raise
+        while True:
+            holder.remaining(owner_deadline)
+            state = properties(TASK_UNIT)
+            if state.get('SubState') == 'exited' or state.get('ActiveState') in ('failed', 'inactive'):
+                break
+            time.sleep(min(.1, holder.remaining(owner_deadline)))
+        expected_result = 'success' if status == 0 else 'signal' if status < 0 else 'exit-code'
+        report['task_unit_result'] = state.get('Result') if state.get('Result') in (
+            'success', 'exit-code', 'signal', 'timeout', 'oom-kill', 'resources') else 'other'
+        require(state.get('ExecMainStatus') == str(abs(status)) and state.get('Result') == expected_result
+                and empty(TASK_UNIT), 'task_holder_exit')
+
+
 def guest(args):
     backend = getattr(args, 'inference_backend', 'torch')
     profile = trial_profile(getattr(args, 'model_profile', MODEL), backend)
@@ -638,22 +714,25 @@ def guest(args):
         require(int(state['MainPID']) > 0, 'core_process')
         report['phase'] = 'opencode-task'
         created.append(TASK_UNIT)
-        start(TASK_UNIT, task_arguments(backend), 768 * 1024**2, 2550)
-        deadline = time.monotonic() + 2565
-        while time.monotonic() < deadline:
-            state = properties(TASK_UNIT)
-            if state.get('SubState') == 'exited' or state.get('ActiveState') in ('failed', 'inactive'):
-                break
-            time.sleep(2)
-        report['task_unit_result'] = state.get('Result') if state.get('Result') in (
-            'success', 'exit-code', 'signal', 'timeout', 'oom-kill', 'resources') else 'other'
-        report['task_exit_status'] = int(state.get('ExecMainStatus', '-1'))
-        if (BASE / 'task.json').exists():
-            report['task'] = load(BASE / 'task.json', 32768)
-            validate_task_selection(report['task'], profile, backend)
-        for name, field in ((CORE_UNIT, 'core_memory'), (TASK_UNIT, 'task_memory')):
-            report[field] = memory(name)
-            require(report[field]['swap'] == report[field]['oom_kill'] == 0, 'resource_violation')
+        if backend != 'torch':
+            run_native_task(profile, backend, report)
+        else:
+            start(TASK_UNIT, task_arguments(backend), 768 * 1024**2, 2550)
+            deadline = time.monotonic() + 2565
+            while time.monotonic() < deadline:
+                state = properties(TASK_UNIT)
+                if state.get('SubState') == 'exited' or state.get('ActiveState') in ('failed', 'inactive'):
+                    break
+                time.sleep(2)
+            report['task_unit_result'] = state.get('Result') if state.get('Result') in (
+                'success', 'exit-code', 'signal', 'timeout', 'oom-kill', 'resources') else 'other'
+            report['task_exit_status'] = int(state.get('ExecMainStatus', '-1'))
+            if (BASE / 'task.json').exists():
+                report['task'] = load(BASE / 'task.json', 32768)
+                validate_task_selection(report['task'], profile, backend)
+            for name, field in ((CORE_UNIT, 'core_memory'), (TASK_UNIT, 'task_memory')):
+                report[field] = memory(name)
+                require(report[field]['swap'] == report[field]['oom_kill'] == 0, 'resource_violation')
         report['core_diagnostics'] = private.service_diagnostic(
             BASE / (CORE_UNIT + '.log'), **({'memory_enabled': True} if backend != 'torch' else {}))
         require(report['task_exit_status'] == 0 and report.get('task', {}).get('passed') is True, 'task_failed')
@@ -683,7 +762,11 @@ def guest(args):
         # The original worker monitor owns descendants; stopping the complete
         # cgroup joins nested native/model processes, not just their leaders.
         for name in reversed(created):
-            if cgroup(name).exists():
+            # Native task counters were read while the joined-child holder was
+            # still the sole member. Do not reintroduce a post-exit cgroup race
+            # or overwrite that bound observation during unconditional cleanup.
+            observed_task = backend != 'torch' and name == TASK_UNIT and 'task_memory' in report
+            if not observed_task and cgroup(name).exists():
                 try:
                     report['core_memory' if name == CORE_UNIT else
                            'native_build_memory' if name == NATIVE_UNIT else 'task_memory'] = (

@@ -220,10 +220,14 @@ class Contracts(unittest.TestCase):
         # default. Keep the original fingerprint; do not replace the golden.
         native_blocks = [child for child in ast.walk(node) if isinstance(child, ast.If)
                          and ast.unparse(child.test) == "backend != 'torch'"]
-        self.assertEqual(len(native_blocks), 2)
+        self.assertEqual(len(native_blocks), 3)
         for child in reversed(sorted(native_blocks, key=lambda item: item.lineno)):
             lines = source.splitlines(keepends=True)
-            del lines[child.lineno - node.lineno:child.end_lineno - node.lineno + 1]
+            # The task-holder branch has an explicit unchanged Torch body.
+            # Specialize to that body; keep the historical golden unchanged.
+            replacement = [line[4:] for line in lines[child.orelse[0].lineno - node.lineno:
+                           child.end_lineno - node.lineno + 1]] if child.orelse else []
+            lines[child.lineno - node.lineno:child.end_lineno - node.lineno + 1] = replacement
             source = ''.join(lines)
         source = specialize_memory_diagnostics(source)
         changes = (
@@ -250,6 +254,8 @@ class Contracts(unittest.TestCase):
              "'core_memory' if name == CORE_UNIT else 'task_memory'"),
             ("(\n                               native_memory(profile['core_memory_bytes']) if name == NATIVE_UNIT else memory(name))", "memory(name)"),
             (",\n                native_cpu=backend != 'torch'", ''),
+            ("            observed_task = backend != 'torch' and name == TASK_UNIT and 'task_memory' in report\n", ''),
+            ('if not observed_task and cgroup(name).exists():', 'if cgroup(name).exists():'),
         )
         for added, original in changes:
             self.assertIn(added, source)
