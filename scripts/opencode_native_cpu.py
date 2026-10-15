@@ -28,6 +28,8 @@ NATIVE_SESSION = 'connection_bound_v1'
 LEGACY_WRAPPERS = ('CMakeLists.txt', 'adapter.h', 'adapter.cpp', 'bounded-tensor-validation.patch')
 CONSTRAINED_WRAPPERS = LEGACY_WRAPPERS + ('output-constraint.h', 'output-constraint.cpp')
 SESSION_WRAPPERS = CONSTRAINED_WRAPPERS + ('session-state.h',)
+ALIGNED_WRAPPERS = SESSION_WRAPPERS + ('q1-aligned-load.patch',)
+CPU_FIELDS = ('cpu_source_overlay', 'cpu_compile_source_verified')
 MODEL = 'qwen3-4b-instruct-2507-v1'
 BASE = Path('/home/vpci/opencode-trial')
 CORE = Path('/home/vpci/source')
@@ -161,12 +163,21 @@ def validate_build(core, base):
             'native_build_provenance')
     library = file_identity(base / 'llama-build/libvolparossa_llama_cpu.so', 128 * 1024 ** 2)
     require(value.get('library') == {'path': 'libvolparossa_llama_cpu.so', **library}, 'native_library_binding')
-    names = SESSION_WRAPPERS if session else (CONSTRAINED_WRAPPERS if constrained else LEGACY_WRAPPERS)
+    # The exact core parser above validates this atomic pair. Build v4 alone
+    # cannot distinguish a historical seven-source build from the correction.
+    aligned = 'cpu_source_overlay' in value
+    require(not any(key in value for key in CPU_FIELDS) or
+            (session and aligned and type(value['cpu_source_overlay']) is dict
+             and value.get('cpu_compile_source_verified') is True), 'native_build_cpu')
+    names = ALIGNED_WRAPPERS if aligned else (
+        SESSION_WRAPPERS if session else (CONSTRAINED_WRAPPERS if constrained else LEGACY_WRAPPERS))
     wrapper = {name: file_identity(core / 'workers/volparossa-ml/native-cpu' / name, 1024 ** 2)
                for name in names}
     require(value.get('wrapper_sources') == wrapper, 'native_wrapper_binding')
     builder.verify_loader_compilation(base / 'llama-build',
                                       base / 'llama-build/loader-overlay/llama-model-loader.cpp')
+    if aligned:
+        builder.verify_cpu_compilation(base / 'llama-build', base / 'llama-source')
     require(type(value.get('dynamic_dependencies')) is list
             and value['dynamic_dependencies'] and len(set(value['dynamic_dependencies'])) == len(value['dynamic_dependencies'])
             and set(value['dynamic_dependencies']) <= builder.ALLOWED_NEEDED, 'native_dependency_binding')
@@ -177,6 +188,8 @@ def validate_build(core, base):
         result.update(build_version=value['version'], output_constraints=[OUTPUT_CONSTRAINT])
     if session:
         result['native_sessions'] = [NATIVE_SESSION]
+    if aligned:
+        result.update({key: value[key] for key in CPU_FIELDS})
     return result
 
 
@@ -215,6 +228,9 @@ def validate_provision(core, base, report, build):
                  else 'output_constraints' not in copied_build), 'native_copied_build_constraint')
     require(copied_build.get('native_sessions') == [NATIVE_SESSION] if session
             else 'native_sessions' not in copied_build, 'native_copied_build_session')
+    cpu = {key: copied_build[key] for key in CPU_FIELDS if key in copied_build}
+    require(cpu == {key: build[key] for key in CPU_FIELDS if key in build},
+            'native_copied_build_cpu')
     for name, maximum in (('library', 128 * 1024 ** 2), ('gguf', 9 * 1024 ** 3)):
         require(value[name] == {'path': value[name]['path'], **file_identity(root / value[name]['path'], maximum)},
                 'native_artifact_binding')
@@ -228,11 +244,12 @@ def validate_provision(core, base, report, build):
                       output_constraints=[OUTPUT_CONSTRAINT])
     if session:
         result['native_sessions'] = [NATIVE_SESSION]
+    result.update(cpu)
     return result
 
 
 def require_output_constraint(build, backend):
-    """Current trial requires both constrained output and the owner-session ABI.
+    """Current trial requires constrained output, owner sessions and CPU correction.
 
     Historical validators above remain readable; neither an old constrained
     build nor a session capability on only one artifact authorizes this trial.
@@ -242,6 +259,14 @@ def require_output_constraint(build, backend):
             and build.get('output_constraints') == backend.get('output_constraints') == [OUTPUT_CONSTRAINT]
             and build.get('native_sessions') == backend.get('native_sessions') == [NATIVE_SESSION],
             'native_output_constraint_required')
+    # These closed projections come from validate_build/validate_provision,
+    # which bind the exact core-owned patch and real compiler-input checks.
+    require(build.get('cpu_compile_source_verified') is True
+            and backend.get('cpu_compile_source_verified') is True
+            and type(build.get('cpu_source_overlay')) is dict
+            and build['cpu_source_overlay'].get('kind') == 'q1_avx2_aligned_load_v1'
+            and build['cpu_source_overlay'] == backend.get('cpu_source_overlay'),
+            'native_cpu_correction_required')
 
 
 def guest_build(deadline=None):

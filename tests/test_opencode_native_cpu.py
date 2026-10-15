@@ -37,7 +37,7 @@ KIND = 'llama_cpp_bf16_v1'
 
 class Contracts(unittest.TestCase):
     def test_native_is_refused_without_final_pin_and_cannot_replace_default(self):
-        self.assertEqual(TRIAL.NATIVE_CORE, '95ef4541e518f9f9050dedc5d24bd4176b70db71')
+        self.assertEqual(TRIAL.NATIVE_CORE, '6d65bb12ed7b8720d43868c9306313133a5b96ae')
         original = TRIAL.trial_profile(TRIAL.LARGE_MODEL)
         self.assertNotIn('inference_backend', original)
         with patch.object(TRIAL, 'NATIVE_CORE', None), self.assertRaisesRegex(ValueError, 'native_core_not_pinned'):
@@ -691,7 +691,15 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
                 TRIAL.run_native_build(11 * TRIAL.GIB, {})
             self.assertEqual(start.call_count, 1)
 
-    def bundle_fixture(self, directory, constrained=False, session=False):
+    def cpu_overlay(self):
+        # Inert provenance fixture; actual core hashes are checked separately.
+        return dict(kind='q1_avx2_aligned_load_v1', original_path='ggml/src/ggml-cpu/arch/x86/quants.c',
+                    original_sha256='1' * 64, effective_sha256='2' * 64,
+                    patch_path='native-cpu/q1-aligned-load.patch', patch_sha256='3' * 64,
+                    compiled_source='cpu-overlay/quants.c')
+
+    def bundle_fixture(self, directory, constrained=False, session=False, aligned=False):
+        session = session or aligned
         constrained = constrained or session
         base, core = Path(directory) / 'base', Path(directory) / 'core'
         build_root, backend = base / 'llama-build', base / 'ml/native-backend'
@@ -703,8 +711,8 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
             return {'bytes': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
         library = artifact(build_root / 'libvolparossa_llama_cpu.so', b'inert library bytes, never loaded')
         (backend / 'libvolparossa_llama_cpu.so').write_bytes((build_root / 'libvolparossa_llama_cpu.so').read_bytes())
-        names = NATIVE.SESSION_WRAPPERS if session else (
-            NATIVE.CONSTRAINED_WRAPPERS if constrained else NATIVE.LEGACY_WRAPPERS)
+        names = NATIVE.ALIGNED_WRAPPERS if aligned else (NATIVE.SESSION_WRAPPERS if session else (
+            NATIVE.CONSTRAINED_WRAPPERS if constrained else NATIVE.LEGACY_WRAPPERS))
         wrapper = {name: artifact(wrappers / name, b'inert source ' + name.encode()) for name in names}
         raw_build = dict(version=4 if session else (3 if constrained else 2),
                          kind=KIND, source_commit=NATIVE.SOURCE, source_tree='b' * 40,
@@ -716,6 +724,8 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
             raw_build['output_constraints'] = [NATIVE.OUTPUT_CONSTRAINT]
         if session:
             raw_build['native_sessions'] = [NATIVE.NATIVE_SESSION]
+        if aligned:
+            raw_build.update(cpu_source_overlay=self.cpu_overlay(), cpu_compile_source_verified=True)
         for root in (build_root, backend):
             (root / 'build.json').write_text(json.dumps(raw_build))
         build_hash = hashlib.sha256((build_root / 'build.json').read_bytes()).hexdigest()
@@ -736,7 +746,7 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
         parser = SimpleNamespace(validate_manifest=Mock(), validate_build_provenance=Mock())
         builder = SimpleNamespace(SOURCE=NATIVE.SOURCE, ORIGIN=NATIVE.ORIGIN, KIND=KIND,
                                   ALLOWED_NEEDED={'libc.so.6'}, verify_source=lambda _path: 'b' * 40,
-                                  native=parser, verify_loader_compilation=Mock())
+                                  native=parser, verify_loader_compilation=Mock(), verify_cpu_compilation=Mock())
         return base, core, report, builder, parser
 
     def test_exact_build_and_converted_manifest_bind_actual_inert_bytes(self):
@@ -806,7 +816,8 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
                 build = NATIVE.validate_build(core, base)
             with patch.object(NATIVE, 'module', return_value=parser):
                 backend = NATIVE.validate_provision(core, base, report, build)
-            NATIVE.require_output_constraint(build, backend)
+            with self.assertRaisesRegex(ValueError, 'native_cpu_correction_required'):
+                NATIVE.require_output_constraint(build, backend)
             self.assertEqual((build['build_version'], backend['build_version'], backend['backend_version']),
                              (4, 4, 3))
             self.assertEqual(build['native_sessions'], [NATIVE.NATIVE_SESSION])
@@ -850,6 +861,120 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
                     manifest.write_text(json.dumps(value))
                 with patch.object(NATIVE, 'module', return_value=builder), self.assertRaises((OSError, ValueError)):
                     NATIVE.validate_build(core, base)
+
+    def test_aligned_build_binds_eight_sources_and_closed_cpu_projections(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base, core, report, builder, parser = self.bundle_fixture(temp, aligned=True)
+            with patch.object(NATIVE, 'module', return_value=builder):
+                build = NATIVE.validate_build(core, base)
+            builder.verify_cpu_compilation.assert_called_once_with(base / 'llama-build', base / 'llama-source')
+            with patch.object(NATIVE, 'module', return_value=parser):
+                backend = NATIVE.validate_provision(core, base, report, build)
+            NATIVE.require_output_constraint(build, backend)
+            self.assertEqual(len(build['wrapper_sources']), 8)
+            self.assertEqual(set(build['wrapper_sources']), set(NATIVE.ALIGNED_WRAPPERS))
+            self.assertEqual(set(NATIVE.ALIGNED_WRAPPERS) - set(NATIVE.SESSION_WRAPPERS),
+                             {'q1-aligned-load.patch'})
+            for result in (build, backend):
+                self.assertEqual(result['cpu_source_overlay'], self.cpu_overlay())
+                self.assertIs(result['cpu_compile_source_verified'], True)
+                self.assertNotIn('passed', result)
+                self.assertNotIn(str(base), json.dumps(result))
+            self.assertFalse(build['models_loaded'])
+
+    def test_cpu_pair_cannot_be_partial_false_or_downgraded(self):
+        mutations = [{'cpu_compile_source_verified': flag} for flag in (False, 1, None, 'true')]
+        mutations += [{'cpu_source_overlay': None}, {'version': 3}, {'version': 2}]
+        for changes in mutations + ['cpu_source_overlay', 'cpu_compile_source_verified', 'both']:
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temp:
+                base, core, _, builder, _ = self.bundle_fixture(temp, aligned=True)
+                path = base / 'llama-build/build.json'
+                value = json.loads(path.read_text())
+                if type(changes) is dict:
+                    value.update(changes)
+                else:
+                    for key in NATIVE.CPU_FIELDS if changes == 'both' else (changes,):
+                        del value[key]
+                path.write_text(json.dumps(value))
+                with patch.object(NATIVE, 'module', return_value=builder), self.assertRaises(ValueError):
+                    NATIVE.validate_build(core, base)
+                builder.verify_cpu_compilation.assert_not_called()
+
+    def test_cpu_patch_inventory_and_content_cannot_be_substituted(self):
+        for mutation in ('missing', 'modified', 'unlisted', 'extra'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                base, core, _, builder, _ = self.bundle_fixture(temp, aligned=True)
+                patch_path = core / 'workers/volparossa-ml/native-cpu/q1-aligned-load.patch'
+                if mutation == 'missing':
+                    patch_path.unlink()
+                elif mutation == 'modified':
+                    patch_path.write_bytes(b'changed, never executed')
+                else:
+                    path = base / 'llama-build/build.json'
+                    value = json.loads(path.read_text())
+                    if mutation == 'unlisted':
+                        del value['wrapper_sources']['q1-aligned-load.patch']
+                    else:
+                        value['wrapper_sources']['extra.patch'] = value['wrapper_sources']['q1-aligned-load.patch']
+                    path.write_text(json.dumps(value))
+                with patch.object(NATIVE, 'module', return_value=builder), self.assertRaises((OSError, ValueError)):
+                    NATIVE.validate_build(core, base)
+                builder.verify_cpu_compilation.assert_not_called()
+
+    def test_cpu_core_and_compilation_rejections_are_not_swallowed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base, core, _, builder, parser = self.bundle_fixture(temp, aligned=True)
+            with patch.object(NATIVE, 'module', return_value=builder):
+                parser.validate_build_provenance.side_effect = ValueError('CORE_CPU_REJECTED')
+                with self.assertRaisesRegex(ValueError, 'CORE_CPU_REJECTED'):
+                    NATIVE.validate_build(core, base)
+                builder.verify_cpu_compilation.assert_not_called()
+                parser.validate_build_provenance.side_effect = None
+                builder.verify_cpu_compilation.side_effect = ValueError('CORE_CPU_COMPILE_REJECTED')
+                with self.assertRaisesRegex(ValueError, 'CORE_CPU_COMPILE_REJECTED'):
+                    NATIVE.validate_build(core, base)
+                builder.verify_cpu_compilation.assert_called_once()
+
+    def test_copied_cpu_provenance_must_match_the_verified_build(self):
+        for mutation in ('missing', 'changed', 'false', 'copied_bytes'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                base, core, report, builder, parser = self.bundle_fixture(temp, aligned=True)
+                with patch.object(NATIVE, 'module', return_value=builder):
+                    build = NATIVE.validate_build(core, base)
+                if mutation == 'missing':
+                    del build['cpu_source_overlay']
+                elif mutation == 'changed':
+                    build['cpu_source_overlay']['effective_sha256'] = 'f' * 64
+                elif mutation == 'false':
+                    build['cpu_compile_source_verified'] = False
+                else:
+                    path = base / 'ml/native-backend/build.json'
+                    path.write_bytes(path.read_bytes() + b' ')
+                with patch.object(NATIVE, 'module', return_value=parser), \
+                        self.assertRaisesRegex(ValueError, 'native_copied_build_(cpu|binding)'):
+                    NATIVE.validate_provision(core, base, report, build)
+
+    def test_trial_requires_matching_cpu_correction_on_both_projections(self):
+        build = dict(build_version=4, output_constraints=[NATIVE.OUTPUT_CONSTRAINT],
+                     native_sessions=[NATIVE.NATIVE_SESSION], cpu_source_overlay=self.cpu_overlay(),
+                     cpu_compile_source_verified=True)
+        backend = dict(build, backend_version=3)
+        for side in ('build', 'backend'):
+            for field, values in (('cpu_source_overlay', (None, {}, 'unknown', dict(self.cpu_overlay(),
+                                             effective_sha256='f' * 64))),
+                                  ('cpu_compile_source_verified', (None, False, 1, 'true'))):
+                for value in values:
+                    a, b = copy.deepcopy(build), copy.deepcopy(backend)
+                    (a if side == 'build' else b)[field] = value
+                    with self.subTest(side=side, field=field, value=value), \
+                            self.assertRaisesRegex(ValueError, 'native_cpu_correction_required'):
+                        NATIVE.require_output_constraint(a, b)
+        for a, b in (({key: value for key, value in build.items() if key not in NATIVE.CPU_FIELDS},
+                       {key: value for key, value in backend.items() if key not in NATIVE.CPU_FIELDS}),
+                      (dict(build, cpu_source_overlay={'kind': 'unreviewed'}),
+                       dict(backend, cpu_source_overlay={'kind': 'unreviewed'}))):
+            with self.assertRaisesRegex(ValueError, 'native_cpu_correction_required'):
+                NATIVE.require_output_constraint(a, b)
 
     def test_session_backend_rejects_missing_mixed_and_copied_capability(self):
         for changes in ({'version': True}, {'version': 4}, {'version': 2},
@@ -905,7 +1030,8 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
 
     def test_current_trial_requires_exact_session_on_both_closed_projections(self):
         build = dict(build_version=4, output_constraints=[NATIVE.OUTPUT_CONSTRAINT],
-                     native_sessions=[NATIVE.NATIVE_SESSION])
+                     native_sessions=[NATIVE.NATIVE_SESSION], cpu_source_overlay=self.cpu_overlay(),
+                     cpu_compile_source_verified=True)
         backend = dict(build, backend_version=3)
         NATIVE.require_output_constraint(build, backend)
         for field in ('build_version', 'output_constraints', 'native_sessions'):
@@ -1105,6 +1231,55 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
             loader.write_bytes(raw + b'\n')
             with self.assertRaisesRegex(ValueError, 'NATIVE_COMPILED_LOADER'):
                 builder.verify_loader_compilation(output, loader)
+            library.assert_not_called()
+
+    @unittest.skipUnless(os.environ.get('VOLPAROSSA_NATIVE_CORE_TEST_SOURCE'),
+                         'requires explicitly retained exact core source; never builds')
+    def test_actual_pinned_core_cpu_pair_and_compile_input_checks(self):
+        with patch('ctypes.CDLL') as library:
+            builder = self.actual_core_builder()
+            native = builder.native
+            value = dict(version=4, source_commit=native.SOURCE, source_tree=native.SOURCE_TREE,
+                         source_overlay=native.loader_provenance(), loader_compile_source_verified=True,
+                         upstream_original_unchanged=True, output_constraints=[native.OUTPUT_CONSTRAINT],
+                         native_sessions=[native.NATIVE_SESSION], cpu_source_overlay=native.cpu_provenance(),
+                         cpu_compile_source_verified=True)
+            native.validate_build_provenance(value, NATIVE.require)
+            for mutation in ('cpu_source_overlay', 'cpu_compile_source_verified', 'version', 'hash', 'extra'):
+                changed = copy.deepcopy(value)
+                if mutation in NATIVE.CPU_FIELDS:
+                    del changed[mutation]
+                elif mutation == 'version':
+                    changed['version'] = 3
+                    del changed['native_sessions']
+                elif mutation == 'hash':
+                    changed['cpu_source_overlay']['effective_sha256'] = '0' * 64
+                else:
+                    changed['cpu_source_overlay']['extra'] = True
+                with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'NATIVE_CPU_PATCH_BINDING'):
+                    native.validate_build_provenance(changed, NATIVE.require)
+            # Exercise the exact core verifier on inert compiler metadata.
+            # This is not a compiler execution or a real native-source receipt.
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                output, source = root / 'output', root / 'upstream'
+                staged = output / 'cpu-overlay/quants.c'
+                staged.parent.mkdir(parents=True)
+                raw = b'inert CPU fixture; never compiled'
+                staged.write_bytes(raw)
+                database = output / 'build/compile_commands.json'
+                database.parent.mkdir()
+                row = dict(directory=str(database.parent), file=str(staged),
+                           command='cc -o CMakeFiles/ggml-cpu.dir/fixture.o -c ' + str(staged))
+                with patch.object(native, 'CPU_EFFECTIVE_SHA', hashlib.sha256(raw).hexdigest()):
+                    database.write_text(json.dumps([row]))
+                    builder.verify_cpu_compilation(output, source)
+                    for changed in (dict(row, file=str(source / native.CPU_ORIGINAL_PATH)),
+                                    dict(row, command='cc -o CMakeFiles/wrong.dir/x.o -c ' + str(staged)),
+                                    dict(row, command='cc -o CMakeFiles/ggml-cpu.dir/x.o -c wrong.c')):
+                        database.write_text(json.dumps([changed]))
+                        with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, 'NATIVE_COMPILED_CPU'):
+                            builder.verify_cpu_compilation(output, source)
             library.assert_not_called()
 
 
