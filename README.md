@@ -63,23 +63,29 @@ not Codex. It joins these implemented components:
 - An explicit Linux launcher with a selected writable project, temporary state,
   no inherited account credentials and no external network interface.
 
-**Current proof:** the pinned OpenCode source builds and the actual runtime
+**Runtime and adapter proof:** the pinned OpenCode source builds and the actual runtime
 completes a tool loop through the production launcher and adapters: one approved
 command changes a disposable file, its tool result returns to the core interface,
 and the session shuts down cleanly. A second native trial invokes the cooperative
 tool, preserves complete and incomplete core results, and confirms that only the
 enrolled public snapshot crosses the bridge. Both trials use **synthetic core/model
 replies**, not real inference or peer execution. Focused checks additionally cover
-adapter, editor and lifecycle behavior. The complete model-driven OpenCode
-read/edit/test loop, native editor UI operation, protected peer execution and a
-finished immune-policy path remain unproved.
+adapter, editor and lifecycle behavior.
 
-**Latest real native CPU trial:** the [4B run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38742699743)
-completed two OpenCode `read` actions, then reached the third model request's
-compute deadline. The project remained unchanged; no edit or test passed.
-The next candidate reuses the model and matching prompt prefixes within one
-owner task, with the ordinary toolset and bounded resources. Its transport tests
-do not yet prove faster inference or a complete coding task. See the
+**Real model-driven coding:** the [Qwen4B native CPU trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38806073909)
+completed two reads, an approved edit and an approved test through actual
+OpenCode and core inference. The original tests stayed unchanged and an
+independent check passed. The bounded coding task took about 37 minutes; this
+does not establish competitive performance or general coding quality.
+
+The **whole trial still failed** during its final checks: task-resource
+measurements and the later input-integrity and graceful core-stop results were
+not retained. Runtime and owned guest cleanup were confirmed separately. The
+follow-up keeps the task's resource counters available until the parent has
+verified them, without changing the model, ordinary tools, permissions or
+budgets. Its source checks pass; the [new complete trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38816006720)
+has not yet been accepted. Native editor UI operation, protected peer execution
+and the complete immune-policy path also remain unproved. See the
 [native CPU evidence](docs/OPENCODE.md#explicit-native-cpu-candidate).
 
 **Real public peer proof:** a separate owner command successfully obtained a
@@ -146,9 +152,9 @@ notice and source pin are preserved in [third-party provenance](THIRD_PARTY_LICE
 
 ## Remaining work
 
-- Exercise the source-built OpenCode runtime with actual core inference and a
-  model-driven read/edit/test task with explicit local approvals and independently
-  checked results, then verify native editor operation.
+- Complete the whole real-model trial, including task-resource measurements,
+  input-integrity checks and graceful core shutdown after the proven bounded
+  read/edit/test task, then verify native editor operation.
 - Extend the proven public single-file owner command to a complete real-model
   OpenCode cooperative tool loop; retain original results, cancellation and provenance.
 - Implement remote conversation execution and actual protected private work,

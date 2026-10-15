@@ -4,6 +4,12 @@ The selected foundation is OpenCode v1.18.34 at
 `aec0b9a6d8898f68f923aaf08b7306d931fd9d76`. Codex scripts and reports are historical,
 not an alternative implicitly selected by the editor.
 
+The native Qwen4B path has completed a bounded model-driven read/edit/test task,
+but the enclosing trial failed during its final checks. The corrected full
+trial has not yet been accepted. See [current native CPU evidence](#explicit-native-cpu-candidate)
+for the exact sources and remaining acceptance requirements. Historical trial
+records below retain their original pins and failed outcomes.
+
 ## Explicit source build
 
 On Linux amd64, with Python 3 and bubblewrap already installed:
@@ -81,8 +87,9 @@ Limits remain 600 seconds per request, at most 128 requests, 300 idle seconds an
 covers that task lifetime; each request retains its own CPU allowance and the
 existing pressure and memory checks. Tool descriptions, context limits, model,
 workspace permissions and independent task checks are not reduced for the trial.
-Synthetic Unix/HTTP tests verify the new correlation and cleanup contracts;
-actual model reuse, acceleration and successful editing remain to be demonstrated.
+Synthetic Unix/HTTP tests verify the correlation and cleanup contracts. The
+[native task](#explicit-native-cpu-candidate) subsequently completed real reads,
+editing and testing; acceleration has not been established by a comparison.
 This private-local execution slice does not complete protected peer execution.
 
 ### Core-selected coding profiles
@@ -105,20 +112,20 @@ execution on other peers.
 76 targeted Node contract tests and ten inert Python session-selection tests
 pass. They cover actual HTTP/Unix framing with synthetic core replies, legacy
 compatibility, result binding, namespace command selection and startup refusal.
-No model or OpenCode binary ran in those tests. The core's source-only normal
-build now passes all five native check targets; ABI, loader, BF16/F32 and
-output-constraint checks also pass under ASan/UBSan. The wider upstream tensor
-test still fails on its previously recorded Q1_0/Q8_0 alignment error. See
+No model or OpenCode binary ran in those tests. At that historical checkpoint,
+the core's source-only normal build passed all five native check targets; ABI,
+loader, BF16/F32 and output-constraint checks also passed under ASan/UBSan. The
+wider upstream tensor test failed on its Q1_0/Q8_0 alignment error. See
 [the original source-only run](https://github.com/VOLPAROSSA/volparossa/actions/runs/38671551374).
 The earlier invalid JSON trial is not considered fixed by these contract checks.
 
-The next native trial is pinned to core
+That historical native candidate was pinned to core
 `5607f1177dc230a71414e7468c221b950f43bca6`, with matching build v3/backend v2
 provenance and an explicit selector passed into the actual OpenCode runtime.
 The native guest and outer verifier require task receipt v2 with that selector;
 legacy Torch arguments and task receipt v1 remain unchanged.
 
-The last completed trial on core `9d044921` reached one actual OpenCode read,
+The earlier trial on core `9d044921` reached one actual OpenCode read,
 then stopped without an edit or test; its six execution failures lacked an
 identified cause. The new pin retains closed failure codes at the private-task
 boundary, including admission before worker startup and result validation after
@@ -149,9 +156,9 @@ admission. Model quality and useful execution still require real-model evidence.
 Before starting OpenCode, the owner validates the complete core capability reply,
 including template, limits, private-local scope and negotiated `greedy_v1` policy.
 Current native sessions also require `execution_error_version: 1`; an older core
-without that capability is refused before starting the runtime. Both native smoke
-profiles pin core `6a517b576baa17e7329661ee0476d1848081d114` for this contract,
-including the preserved main integrations and reviewed source-quality fixes.
+without that capability is refused before starting the runtime. Both legacy Torch
+smoke profiles retain core `6a517b576baa17e7329661ee0476d1848081d114`.
+The native CPU backend has its own [current pin](#explicit-native-cpu-candidate).
 Legacy Q&A and conversation clients that do not opt in remain unchanged.
 
 That one model identity binds the native catalog, all agent roles, provider,
@@ -481,9 +488,11 @@ the report explicitly records `model_inference: false` and `peer_execution: fals
 ```
 
 Its `native-cooperative-smoke-report.json` is separate from the local-tool report.
-Neither report may be relabelled as real inference or immune-policy proof.
-Actual model-driven coding, native editor UI operation, confidential peer
-execution and full immune supervision remain unproved.
+Neither synthetic report may be relabelled as real inference or immune-policy
+proof. A separate [real native task](#explicit-native-cpu-candidate) now proves
+bounded model-driven coding, with whole-trial acceptance still pending. Native
+editor UI operation, confidential peer execution and full immune supervision
+remain unproved.
 
 ## Real public-core integration driver
 
@@ -581,9 +590,10 @@ stop, and greedy generation does not guarantee a completed coding task.
 `scripts/smoke_opencode_inference.py` prepares one explicit disposable Debian 13
 KVM trial; it does not install or run the model on the development host. Its
 `pack` mode captures each Code source/runtime file by hash and the exact core
-archive selected by its explicit model profile. Both current profiles pin core
+archive selected by its explicit model profile and backend. Both Torch profiles pin core
 `6a517b576baa17e7329661ee0476d1848081d114`, while retaining their different
-models and resource profiles. Historical 0.6B trials used `845cc84d`; the last
+models and resource profiles. The native backend uses the separate pin below.
+Historical 0.6B trials used `845cc84d`; an earlier
 4B trial used `1297f8f1a5d163d802efd066c51a950b95588fa5`, including the bounded
 provisioning-timeout recovery from `3aa0e2d0`. Neither those historical outcomes
 nor the synthetic native-runtime probe proves the current real-model candidate.
@@ -786,6 +796,53 @@ An unprepared branch cannot pass the source guard and must not install tools or
 launch a guest. There is no automatic inference run on push or pull request.
 
 ### Explicit native CPU candidate
+
+The native `llama_cpp_bf16_v1` backend currently pins core
+`6d65bb12ed7b8720d43868c9306313133a5b96ae` and llama.cpp source
+`7fe450e19305b828c199d602c23a8337aaa1f03b`, with the original Qwen4B BF16 model.
+It uses a resident connection-bound session, build-manifest v4, backend-manifest
+v3 and the explicitly selected `qwen_tagged_tool_json_v1` output constraint.
+
+In [trial 38806073909](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38806073909),
+Code `cce5a211a0624fdcc05a787bd4ff31422b30ae65` and that core completed
+**the bounded coding task, not the whole trial**. Five real model results
+produced four tool calls and a final response: two reads, one approved edit and
+one approved bash test. The original test remained unchanged, the independent
+check passed, and no model answers were injected. The task took 2,236,512 ms,
+about 37 minutes. All five request cleanups and runtime/project cleanup passed.
+
+The enclosing trial failed with `stage_failed` after the task. Task-memory
+measurements and the later `inputs_unchanged` and `core_clean_stop` fields are
+absent, not passing or zero observations. Core peak memory was 6,918,348,800 bytes
+within 11 GiB, with zero swap and OOM kills. Owned guest units, private data,
+QEMU and scratch cleanup passed; normalized routes/DNS matched. These results
+do not prove confidential peer execution or general coding performance.
+
+Original artifact ZIP SHA-256:
+`8c31054298ef59f0a50c360d4f772afaa010b3c66144e4af85013f49d8565925`;
+original log ZIP SHA-256:
+`5e21e3f3ec2b6310c58079e81eacb1b35a2cf06858650afa8176463196804d30`.
+
+Source review found that the parent read task-resource counters after the command
+exited, when its empty cgroup could already have disappeared. The generic original
+failure does not prove that this was the particular failing read. The correction keeps a small holder
+alive after joining the unchanged task command. A nonce-bound local socket,
+peer credentials, receipt hash and original exit status bind the handshake. The
+parent checks the exact cgroup and reads its actual counters before releasing
+the holder, then requires the original status and an empty unit. Missing
+counters remain errors. The same absolute deadlines include this handshake.
+
+[Source checks](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38815603511)
+pass 533 distinct tests with five explicit skips, including all 29 holder tests.
+The corrected [full trial 38816006720](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38816006720)
+is bound to Code `0031c0e97f8bd0221c207c5a0f00370073cf617d` and the same core,
+model, ordinary tools, permissions and budgets. Its whole-trial acceptance is
+still pending; source checks do not supply missing execution evidence.
+
+#### Earlier native CPU trials
+
+The following records describe their original candidates, not the current pin.
+Their failures remain failures even when a later source correction passes.
 
 The later original [4B trial 37228603308](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/37228603308)
 on Code `714904a3ec452b8e10d8b40be6ac85107606ca3b` and core
