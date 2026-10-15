@@ -19,6 +19,17 @@ SPEC.loader.exec_module(TRIAL)
 
 
 class Contracts(unittest.TestCase):
+    def test_core_diagnostics_use_pinned_closed_collector_without_changing_task_authority(self):
+        guest = inspect.getsource(TRIAL.guest)
+        self.assertIn("private = module(SOURCE / 'tests/integration/agent-private-conversation.py'", guest)
+        self.assertEqual(guest.count("private.service_diagnostic(BASE / (CORE_UNIT + '.log'))"), 2)
+        final = guest.split('    finally:', 1)[1]
+        self.assertIn("private.service_diagnostic(BASE / (CORE_UNIT + '.log'))", final)
+        self.assertIn("report['passed'] = report['phase'] == 'complete' and report['failure'] is None", final)
+        start = inspect.getsource(TRIAL.start)
+        self.assertIn('--setenv=RUST_LOG=off,volparossa::compute::private_diagnostic=debug', start)
+        self.assertNotIn('core_diagnostics', inspect.getsource(TRIAL.validate_task_selection))
+
     def test_task_arguments_preserve_torch_and_only_append_native_selection(self):
         legacy = [str(TRIAL.INPUT / 'runtime/node'), str(TRIAL.INPUT / 'code/scripts/smoke_opencode_inference.cjs'),
                   '--execute', '--yes', '--node', str(TRIAL.INPUT / 'runtime/node'), '--build-report',
