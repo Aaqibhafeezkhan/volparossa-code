@@ -971,7 +971,7 @@ The original bytes are retained without decoding or newline normalization. This
 failed run does not replace or relabel any earlier result or relax model, task,
 integrity, resource or deadline checks.
 
-The next source-only pin is core
+The subsequent source correction used core
 `9e9086ee873f7162f498e8647e6f6f438273e6ce` (tree
 `ecda529c486e4f759f15d107b5e09a7710bcbfa6`). Native execution now retains the actual
 complete initial source-shard measurement rather than reading the unused
@@ -984,8 +984,8 @@ model, task, resource, governor and deadline settings remain unchanged.
 
 The pin includes main's filter broker and four-validator TEST milestone; the
 merge preserves both independent third-party provenance sections. A new actual
-trial requires fresh exact-source CI and preflight. No new model trial has run
-on this source correction, and the original failures above remain unchanged.
+trial requires fresh exact-source CI and preflight. Its actual follow-up is
+recorded below; the original failures above remain unchanged.
 
 Select the native backend consistently for source selection, packing and
 execution, with `--model-profile qwen3-4b-instruct-2507-v1`. The manual workflow
@@ -1016,3 +1016,23 @@ Neither that result nor the latest deadline during post-generation verification
 proves a usable native turn or successful coding loop.
 The core's retained full upstream sanitizer failure on a disallowed quantized
 path also remains explicit; separate BF16/F32 checks do not erase that failure.
+
+The follow-up [trial `37683661957`](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/37683661957)
+on Code `45510055` / core `9e9086ee` passes native build, conversion and
+provisioning, then produces one cleanup-confirmed `invalid_output` result.
+Its task stops after 475,006 ms with no usable native turn, tool action, approved
+read/edit/test or completed command. The fixture is unchanged and independent
+verification is not reached. Runtime, project and guest-unit cleanup complete.
+This is not the earlier execution-deadline failure or a successful coding loop.
+The original artifact ZIP SHA-256 is
+`93edd2b2b92db78a807a1de11a431afb38ede10443b965c9c4fe523eac75573f`;
+original job log SHA-256 is
+`e0b7f8f2c8073ade7ee168c2ef9a4efddc2f5b710f9686c8621fbdf68eb2cd17`.
+
+The next selected-output trial is described under
+[core-selected coding profiles](#core-selected-coding-profiles). Its Code
+source-check run `38672991166` passes 296 Node tests (one skip), seven build
+contracts, 92 Python OpenCode checks (two explicit retained-source skips) and
+ten session-selection checks. The actual checkout `9f79e931` merges `689c7dd`
+into `714904a3` and has the exact candidate tree. Original log ZIP SHA-256:
+`8b59657a74190a61d8d0cf9177d96c0d488aec064e38faa54c30c5bd710ea978`.
