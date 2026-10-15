@@ -48,6 +48,8 @@ async function runSession({input, output, events = process, outputConstraint}, h
   if (outputConstraint !== undefined && outputConstraint !== OUTPUT_CONSTRAINT) return 1;
   const spawnServer = hooks.spawn ?? spawn;
   let provider, child, exited, client, task, running, closing = false, bad = false, requested = false;
+  let nativeSession = false, providerClosing;
+  const closeProvider = () => providerClosing ??= provider.close();
   let seq = 0, verificationSeq = 0, pendingApproval, pendingVerification, finish;
   const expiredApprovals = new Set();
   const expiredVerifications = new Set();
@@ -117,10 +119,14 @@ async function runSession({input, output, events = process, outputConstraint}, h
         Buffer.byteLength(value.prompt) > 65536) { broken(); return; }
     requested = true;
     running = task.run(value.prompt, {signal: abort.signal,
-      ...(verification ? {verify, maxVerificationRounds: verification.maxRounds} : {})}).then(result => {
+      ...(verification ? {verify, maxVerificationRounds: verification.maxRounds} : {})}).then(async result => {
+      // One ordinary OpenCode task owns the warm model connection. Its final
+      // result is not released to the owner before private session state is gone.
+      if (nativeSession) await closeProvider();
       if (!closing) send({type: 'result', result, diagnostics: provider?.diagnostics?.summary ?? null,
         task_diagnostics: task.diagnostics ?? null});
-    }).catch(error => {
+    }).catch(async error => {
+      if (nativeSession) { try { await closeProvider(); } catch { bad = true; } }
       const reason = taskFailure(error);
       // A refused/incomplete/cancelled task is still a failed task, not proof of
       // failed runtime cleanup. OpenCodeTask has already awaited session deletion;
@@ -149,9 +155,11 @@ async function runSession({input, output, events = process, outputConstraint}, h
     // Each provider request rechecks that identity; a core change cannot silently
     // switch the native task to another profile or provider.
     const model = caps.model_profile;
+    nativeSession = caps.inference_backend === 'llama_cpp_bf16_v1';
     if (closing) throw Error('closed');
     provider = await (hooks.provider ?? startChatCompletionsProvider)({socketPath: '/opt/core/compute.sock', model,
-      diagnostics: true, ...(outputConstraint !== undefined ? {outputConstraint} : {})});
+      diagnostics: true, nativeSession,
+      ...(outputConstraint !== undefined ? {outputConstraint} : {})});
     const password = randomBytes(32).toString('hex');
     const cooperative = (hooks.cooperative ?? cooperativeMounted)();
     const settings = runtimeSettings({baseUrl: provider.baseUrl, bearerToken: provider.bearerToken, password, cooperative, model});
@@ -186,7 +194,7 @@ async function runSession({input, output, events = process, outputConstraint}, h
     client?.close();
     if (provider) {
       try {
-        await provider.close();
+        await closeProvider();
         if (provider.observations.submitted !== provider.observations.cleanup_confirmed) bad = true;
       } catch { bad = true; }
     }

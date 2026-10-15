@@ -60,6 +60,31 @@ owner-selected check after each completed coding turn. Each invocation requires
 separate approval; an actual failed check can continue the same session within
 the original task budget. See [editor setup and check limitations](OWNER_VERIFICATION.md#use-from-the-editor).
 
+### Connection-bound native execution candidate
+
+The native CPU path now requests a connection-bound session from the core.
+One OpenCode task can reuse the resident model and exact already-processed
+prompt prefixes across its ordinary tool requests. The core owns the session;
+there is no reusable session token or cache shared across projects or owners.
+This requires the explicit `native_session_version: 1` capability and matching
+build v4/backend v3 provenance. Older cores fail closed on this path; the legacy
+non-native conversation interface remains unchanged.
+
+Each result confirms removal of that request's files, not termination of the
+resident worker. The task waits for a separate, correlated session-close receipt
+before reporting final worker/private-state cleanup. A disconnect or cancellation
+acknowledgement is not that proof. An admitted failed request is never replayed;
+a verified idle closure permits only a new request on a new, empty session.
+
+Limits remain 600 seconds per request, at most 128 requests, 300 idle seconds and
+2,400 seconds for the owner task. The native worker's cumulative CPU ceiling
+covers that task lifetime; each request retains its own CPU allowance and the
+existing pressure and memory checks. Tool descriptions, context limits, model,
+workspace permissions and independent task checks are not reduced for the trial.
+Synthetic Unix/HTTP tests verify the new correlation and cleanup contracts;
+actual model reuse, acceleration and successful editing remain to be demonstrated.
+This private-local execution slice does not complete protected peer execution.
+
 ### Core-selected coding profiles
 
 An experimental owner-selected `outputConstraint: "qwen_tagged_tool_json_v1"`
@@ -162,8 +187,11 @@ alignment does not itself prove that the model can complete a coding task.
 
 Supported message/tool history and call identities are preserved. Unsupported
 inputs fail rather than being silently shortened or stripped. The provider waits
-for core cleanup before returning SDK-compatible SSE or JSON; this is not
-token-by-token model streaming. Exhaustion remains `length`, not successful `stop`.
+for the core's applicable cleanup receipt before returning SDK-compatible SSE or
+JSON: request-file cleanup for a resident native session, complete execution
+cleanup for the legacy one-shot path. Final native worker cleanup is checked at
+task close. This is not token-by-token model streaming. Exhaustion remains
+`length`, not successful `stop`.
 Cleanup-confirmed invalid/truncated output or an unmet tool choice returns a
 terminal HTTP 422, so the pinned SDK and OpenCode do not blindly regenerate that
 unusable turn. The negotiated `execution_budget_exceeded` response also maps to
@@ -496,7 +524,7 @@ python3 -B scripts/pack_opencode_cooperation.py --execute \
   --output /absolute/code-worktree/build/opencode-cooperative-inputs-01
 ```
 
-The manifest binds all 25 source/runtime/license files by hash, size and mode.
+The current manifest binds all 26 source/runtime/license files by hash, size and mode.
 The packer reads source blobs at the selected commit, not uncommitted changes,
 and verifies the existing source-build record and pinned Node distribution. It
 does not download or launch anything. Pass this new directory and the reported

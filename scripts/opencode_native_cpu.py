@@ -24,8 +24,10 @@ SOURCE = '7fe450e19305b828c199d602c23a8337aaa1f03b'
 ORIGIN = 'https://github.com/ggml-org/llama.cpp.git'
 KIND = 'llama_cpp_bf16_v1'
 OUTPUT_CONSTRAINT = 'qwen_tagged_tool_json_v1'
+NATIVE_SESSION = 'connection_bound_v1'
 LEGACY_WRAPPERS = ('CMakeLists.txt', 'adapter.h', 'adapter.cpp', 'bounded-tensor-validation.patch')
 CONSTRAINED_WRAPPERS = LEGACY_WRAPPERS + ('output-constraint.h', 'output-constraint.cpp')
+SESSION_WRAPPERS = CONSTRAINED_WRAPPERS + ('session-state.h',)
 MODEL = 'qwen3-4b-instruct-2507-v1'
 BASE = Path('/home/vpci/opencode-trial')
 CORE = Path('/home/vpci/source')
@@ -144,10 +146,12 @@ def validate_build(core, base):
     tree = builder.verify_source(base / 'llama-source')
     value, report_hash = document(base / 'llama-build/build.json', 65536)
     builder.native.validate_build_provenance(value, require)
-    require(type(value.get('version')) is int and value['version'] in (2, 3), 'native_build_version')
-    constrained = value['version'] == 3
+    require(type(value.get('version')) is int and value['version'] in (2, 3, 4), 'native_build_version')
+    constrained, session = value['version'] >= 3, value['version'] == 4
     require(value.get('output_constraints') == [OUTPUT_CONSTRAINT] if constrained
             else 'output_constraints' not in value, 'native_build_constraint')
+    require(value.get('native_sessions') == [NATIVE_SESSION] if session
+            else 'native_sessions' not in value, 'native_build_session')
     require(value.get('kind') == KIND and value.get('source_commit') == SOURCE
             and value.get('source_tree') == tree and value.get('abi_version') == 1
             and value.get('jobs') == 2 and value.get('cpu') == 'avx2_fma_f16c'
@@ -157,8 +161,9 @@ def validate_build(core, base):
             'native_build_provenance')
     library = file_identity(base / 'llama-build/libvolparossa_llama_cpu.so', 128 * 1024 ** 2)
     require(value.get('library') == {'path': 'libvolparossa_llama_cpu.so', **library}, 'native_library_binding')
+    names = SESSION_WRAPPERS if session else (CONSTRAINED_WRAPPERS if constrained else LEGACY_WRAPPERS)
     wrapper = {name: file_identity(core / 'workers/volparossa-ml/native-cpu' / name, 1024 ** 2)
-               for name in (CONSTRAINED_WRAPPERS if constrained else LEGACY_WRAPPERS)}
+               for name in names}
     require(value.get('wrapper_sources') == wrapper, 'native_wrapper_binding')
     builder.verify_loader_compilation(base / 'llama-build',
                                       base / 'llama-build/loader-overlay/llama-model-loader.cpp')
@@ -169,7 +174,9 @@ def validate_build(core, base):
                 library=library, wrapper_sources=wrapper, jobs=2, nice=19,
                 cpu='avx2_fma_f16c', quantization=False, models_loaded=False)
     if constrained:
-        result.update(build_version=3, output_constraints=[OUTPUT_CONSTRAINT])
+        result.update(build_version=value['version'], output_constraints=[OUTPUT_CONSTRAINT])
+    if session:
+        result['native_sessions'] = [NATIVE_SESSION]
     return result
 
 
@@ -186,21 +193,28 @@ def validate_provision(core, base, report, build):
     value, manifest_hash = document(root / 'backend.json', 16384)
     native = module(core / 'workers/volparossa-ml/llama_cpu.py', 'trial_native_contract')
     native.validate_manifest(value, require)
-    require(type(value.get('version')) is int and value['version'] in (1, 2), 'native_manifest_version')
-    constrained = value['version'] == 2
+    require(type(value.get('version')) is int and value['version'] in (1, 2, 3), 'native_manifest_version')
+    constrained, session = value['version'] >= 2, value['version'] == 3
+    expected_build = value['version'] + 1
     require((value.get('output_constraints') == [OUTPUT_CONSTRAINT]
-             and build.get('build_version') == 3 and build.get('output_constraints') == [OUTPUT_CONSTRAINT])
+             and build.get('build_version') == expected_build
+             and build.get('output_constraints') == [OUTPUT_CONSTRAINT])
             if constrained else ('output_constraints' not in value and 'output_constraints' not in build
                                  and 'build_version' not in build), 'native_manifest_constraint')
+    require((value.get('native_sessions') == build.get('native_sessions') == [NATIVE_SESSION])
+            if session else ('native_sessions' not in value and 'native_sessions' not in build),
+            'native_manifest_session')
     require(manifest_hash == backend['backend_sha256'] and value['model_profile'] == MODEL
             and value['build_manifest_sha256'] == build['build_manifest_sha256']
             and value['library'] == {'path': 'libvolparossa_llama_cpu.so', **build['library']}, 'native_manifest_binding')
     copied_build, build_hash = document(root / 'build.json', 65536)
     require(build_hash == build['build_manifest_sha256'], 'native_copied_build_binding')
     native.validate_build_provenance(copied_build, require)
-    require(type(copied_build.get('version')) is int and copied_build['version'] == (3 if constrained else 2)
+    require(type(copied_build.get('version')) is int and copied_build['version'] == expected_build
             and (copied_build.get('output_constraints') == [OUTPUT_CONSTRAINT] if constrained
                  else 'output_constraints' not in copied_build), 'native_copied_build_constraint')
+    require(copied_build.get('native_sessions') == [NATIVE_SESSION] if session
+            else 'native_sessions' not in copied_build, 'native_copied_build_session')
     for name, maximum in (('library', 128 * 1024 ** 2), ('gguf', 9 * 1024 ** 3)):
         require(value[name] == {'path': value[name]['path'], **file_identity(root / value[name]['path'], maximum)},
                 'native_artifact_binding')
@@ -210,15 +224,23 @@ def validate_provision(core, base, report, build):
                 gguf_sha256=value['gguf']['sha256'], gguf_bytes=value['gguf']['bytes'],
                 source_weights_sha256=value['source_weights_sha256'])
     if constrained:
-        result.update(backend_version=2, build_version=3, output_constraints=[OUTPUT_CONSTRAINT])
+        result.update(backend_version=value['version'], build_version=expected_build,
+                      output_constraints=[OUTPUT_CONSTRAINT])
+    if session:
+        result['native_sessions'] = [NATIVE_SESSION]
     return result
 
 
 def require_output_constraint(build, backend):
-    """Current explicit trial cannot silently run against legacy native artifacts."""
-    require(build.get('build_version') == 3 and backend.get('build_version') == 3
-            and backend.get('backend_version') == 2
-            and build.get('output_constraints') == backend.get('output_constraints') == [OUTPUT_CONSTRAINT],
+    """Current trial requires both constrained output and the owner-session ABI.
+
+    Historical validators above remain readable; neither an old constrained
+    build nor a session capability on only one artifact authorizes this trial.
+    """
+    require(build.get('build_version') == 4 and backend.get('build_version') == 4
+            and backend.get('backend_version') == 3
+            and build.get('output_constraints') == backend.get('output_constraints') == [OUTPUT_CONSTRAINT]
+            and build.get('native_sessions') == backend.get('native_sessions') == [NATIVE_SESSION],
             'native_output_constraint_required')
 
 

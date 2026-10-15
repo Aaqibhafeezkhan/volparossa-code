@@ -15,7 +15,7 @@ PIN = 'aec0b9a6d8898f68f923aaf08b7306d931fd9d76'
 FIELDS = {'version', 'opencode', 'opencodeSha256', 'buildReport', 'node', 'nodeSha256', 'socketPath'}
 COOPERATIVE_FIELD = 'cooperativeSocketPath'
 OUTPUT_CONSTRAINT = 'qwen_tagged_tool_json_v1'
-SOURCES = ('private-compute.cjs', 'private-conversation.cjs', 'responses-provider.cjs',
+SOURCES = ('private-compute.cjs', 'private-conversation.cjs', 'private-native-session.cjs', 'responses-provider.cjs',
            'chat-completions-provider.cjs', 'opencode-config.cjs', 'opencode-client.cjs',
            'opencode-task.cjs', 'opencode-bridge.cjs')
 

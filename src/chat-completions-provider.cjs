@@ -13,6 +13,7 @@ const { PrivateConversation, validateConversation, expectedLimits, check, keys, 
 const { parseJson } = require('./responses-provider.cjs');
 const { PROVIDER_ERRORS, emptyProviderDiagnostic } = require('./opencode-bridge.cjs');
 const { terminalCleanupConfirmed } = require('./private-compute.cjs');
+const { PrivateNativeSession } = require('./private-native-session.cjs');
 
 const HTTP_BYTES = 524288;
 const EXECUTION = Object.freeze({ scope: 'private_local', distributed: false,
@@ -157,7 +158,8 @@ function toConversation(request, model, caps, outputConstraint) {
 }
 
 function completion(result, request) {
-  // PrivateConversation has already checked correlation, output bounds and terminal cleanup.
+  // The negotiated client checked correlation, output bounds and its versioned
+  // cleanup boundary. A v2 warm session still requires final owner-side close.
   if (!result.turn_complete) check(result.output.reason === 'token_limit', 'invalid_model_output');
   const output = result.output;
   const isCall = output.type === 'function_call';
@@ -178,7 +180,8 @@ function completion(result, request) {
     choices: [{ index: 0, message, finish_reason: !result.turn_complete ? 'length' : isCall ? 'tool_calls' : 'stop' }],
     usage: { prompt_tokens: result.prompt_tokens, completion_tokens: result.generated_tokens,
       total_tokens: result.prompt_tokens + result.generated_tokens,
-      prompt_tokens_details: { cached_tokens: 0 }, completion_tokens_details: { reasoning_tokens: 0 } } };
+      ...(result.version === 1 ? { prompt_tokens_details: { cached_tokens: 0 } } : {}),
+      completion_tokens_details: { reasoning_tokens: 0 } } };
 }
 
 function streamChunks(answer, includeUsage) {
@@ -216,15 +219,20 @@ async function readBody(request) {
   catch (error) { throw error.message?.startsWith('private_compute_') ? error : fail('invalid_json'); }
 }
 
-async function startChatCompletionsProvider({ socketPath, model, diagnostics = false, outputConstraint }) {
+async function startChatCompletionsProvider({ socketPath, model, diagnostics = false, outputConstraint,
+  nativeSession = false }) {
   expectedLimits(model);
   check(outputConstraint === undefined || outputConstraint === OUTPUT_CONSTRAINT &&
     model === 'qwen3-4b-instruct-2507-v1', 'unsupported_output_constraint');
   check(typeof diagnostics === 'boolean', 'diagnostic_scope');
+  check(typeof nativeSession === 'boolean' && (!nativeSession || model === 'qwen3-4b-instruct-2507-v1'),
+    'incompatible_capabilities');
   new PrivateConversation(socketPath); // Path validation only; launch does not start compute.
   const bearerToken = randomBytes(32).toString('base64url');
   const authorization = Buffer.from(`Bearer ${bearerToken}`);
   let host, active = null, closing = false, closingPromise;
+  let warm = null, taskDeadline = null, nativeFailure = false;
+  const warmOwners = new Set();
   const observed = { submitted: 0, completed: 0, incomplete: 0, cleanup_confirmed: 0 };
   const records = [];
   const summary = emptyProviderDiagnostic();
@@ -232,6 +240,13 @@ async function startChatCompletionsProvider({ socketPath, model, diagnostics = f
   const count = (object, key) => {
     if (object[key] < 65535) object[key]++;
     else summary.truncated = true;
+  };
+  const creditCleanup = owner => {
+    if (!owner?.client.sessionCleanupConfirmed) return;
+    while (owner.credited < owner.submitted) {
+      owner.credited++; observed.cleanup_confirmed++;
+      if (diagnostics) count(summary, 'cleanup_confirmed');
+    }
   };
   const server = http.createServer({ maxHeaderSize: 8192, headersTimeout: 5000, requestTimeout: 10000,
     keepAliveTimeout: 1000 }, (request, response) => {
@@ -246,11 +261,23 @@ async function startChatCompletionsProvider({ socketPath, model, diagnostics = f
       errorReply(response, 400, 'unsupported_request'); return;
     }
     if (closing || active) { errorReply(response, 503, 'busy'); return; }
+    if (nativeFailure) { errorReply(response, 422, 'execution_failed'); return; }
+    if (nativeSession && observed.submitted >= 128) {
+      errorReply(response, 422, 'execution_budget_exceeded'); return;
+    }
     if (Number(request.headers['content-length'] ?? 0) > HTTP_BYTES) { errorReply(response, 413, 'request_bound'); return; }
     const controller = new AbortController();
-    const client = new PrivateConversation(socketPath, { generationPolicyVersion: 1, executionErrorVersion: 1,
-      ...(outputConstraint !== undefined ? { outputConstraintVersion: 1 } : {}) });
-    const owner = { controller, client, done: null };
+    const clientOptions = { generationPolicyVersion: 1, executionErrorVersion: 1,
+      ...(outputConstraint !== undefined ? { outputConstraintVersion: 1 } : {}) };
+    if (nativeSession && warm?.client.sessionCleanupConfirmed) {
+      creditCleanup(warm); warm = null;
+    }
+    if (nativeSession && !warm) {
+      warm = {client: new PrivateNativeSession(socketPath, clientOptions), submitted: 0, credited: 0};
+      warmOwners.add(warm);
+    }
+    const client = nativeSession ? warm.client : new PrivateConversation(socketPath, clientOptions);
+    const owner = { controller, client, warm: nativeSession ? warm : null, done: null, taskTimer: null };
     active = owner;
     response.once('close', () => { if (!response.writableFinished) controller.abort(); });
     request.once('aborted', () => controller.abort());
@@ -258,17 +285,24 @@ async function startChatCompletionsProvider({ socketPath, model, diagnostics = f
       try {
         const requestBody = await readBody(request);
         if (controller.signal.aborted) throw fail('cancelled');
-        const caps = await client.connect();
+        if (nativeSession) {
+          taskDeadline ??= performance.now() + 2400000;
+          const remaining = Math.floor(taskDeadline - performance.now());
+          check(remaining > 0, 'execution_budget_exceeded');
+          owner.taskTimer = setTimeout(() => controller.abort(), remaining);
+        }
+        const caps = nativeSession && client.sessionState === 'new' ? await client.open() : await client.connect();
         const conversation = toConversation(requestBody, model, caps, outputConstraint);
         if (controller.signal.aborted) throw fail('cancelled');
         observed.submitted++;
+        if (owner.warm) owner.warm.submitted++;
         if (diagnostics) count(summary, 'submitted');
         const started = performance.now();
         const result = await client.submit(conversation, { signal: controller.signal });
-        observed.cleanup_confirmed++;
+        if (!nativeSession) observed.cleanup_confirmed++;
         if (result.turn_complete) observed.completed++; else observed.incomplete++;
         if (diagnostics) {
-          count(summary, 'cleanup_confirmed');
+          if (!nativeSession) count(summary, 'cleanup_confirmed');
           count(summary, result.turn_complete ? 'completed' : 'incomplete');
           count(summary.results, result.output.type);
           if (!result.turn_complete) count(summary.incomplete_reasons, result.output.reason);
@@ -284,12 +318,14 @@ async function startChatCompletionsProvider({ socketPath, model, diagnostics = f
         response.writeHead(200, { 'Content-Type': streaming ? 'text/event-stream' : 'application/json',
           'Cache-Control': 'no-store', 'Connection': 'close', 'X-Content-Type-Options': 'nosniff',
           'X-Volparossa-Execution': 'private-local', 'X-Volparossa-Confidential-Peer': 'unavailable' });
-        // This is SSE protocol adaptation, not token-streaming model execution. No model text
-        // or tool proposal is released before the core confirms worker cleanup.
+        // SSE adaptation, not model token streaming. Legacy results require
+        // worker cleanup. Native-session v2 requires request-file cleanup while
+        // private KV remains in this task's worker until verified session close.
         response.end(streaming ? streamChunks(answer, requestBody.stream_options?.include_usage === true)
           .map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n' : JSON.stringify(answer));
       } catch (error) {
-        if (terminalCleanupConfirmed(error)) {
+        if (nativeSession) nativeFailure = true;
+        if (!nativeSession && terminalCleanupConfirmed(error)) {
           observed.cleanup_confirmed++;
           if (diagnostics) count(summary, 'cleanup_confirmed');
         }
@@ -300,12 +336,24 @@ async function startChatCompletionsProvider({ socketPath, model, diagnostics = f
         // without a model result; it must not restart the same expensive turn.
         // OpenCode v1.18.34 retries every 5xx, so 502 would repeatedly regenerate
         // the same unusable greedy turn. Preserve transient/uncertain failures.
-        const status = ['busy', 'cleanup_unconfirmed', 'socket_unavailable', 'execution_failed'].includes(code) ? 503 :
+        const status = nativeSession && ['cleanup_unconfirmed', 'socket_unavailable', 'socket_error',
+          'disconnected', 'execution_failed', 'execution_budget_exceeded'].includes(code) ? 422 :
+          ['busy', 'cleanup_unconfirmed', 'socket_unavailable', 'execution_failed'].includes(code) ? 503 :
           ['invalid_model_output', 'tool_choice_not_met', 'execution_budget_exceeded'].includes(code) ? 422 :
           code === 'request_bound' ? 413 : 400;
         errorReply(response, status, code);
       } finally {
-        client.close();
+        clearTimeout(owner.taskTimer);
+        if (nativeSession) {
+          if (controller.signal.aborted) nativeFailure = true;
+          if (controller.signal.aborted && client.sessionState === 'open' && !client.pending) {
+            // Cancellation also ends an idle warm worker, not just an admitted
+            // request. Keep uncertainty visible to the final owner close.
+            try { await client.finish(); } catch { client.close(); }
+          }
+          creditCleanup(owner.warm);
+        }
+        else client.close();
         if (active === owner) active = null;
       }
     })();
@@ -330,7 +378,23 @@ async function startChatCompletionsProvider({ socketPath, model, diagnostics = f
         owner?.controller.abort();
         server.closeAllConnections();
         await owner?.done;
+        let cleanupError;
+        if (nativeSession) {
+          try {
+            for (const session of warmOwners) {
+              // A failed handshake started no session. Once open was sent, an
+              // absent receipt is uncertainty even if no model turn was sent.
+              if (session.client.openId !== null) await session.client.finish();
+              creditCleanup(session);
+            }
+          } catch (error) { cleanupError = error; }
+          finally {
+            for (const session of warmOwners) session.client.close();
+            warmOwners.clear();
+          }
+        }
         await new Promise(resolve => server.close(resolve));
+        if (cleanupError) throw cleanupError;
       })();
       return closingPromise;
     } };

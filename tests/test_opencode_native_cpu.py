@@ -691,7 +691,8 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
                 TRIAL.run_native_build(11 * TRIAL.GIB, {})
             self.assertEqual(start.call_count, 1)
 
-    def bundle_fixture(self, directory, constrained=False):
+    def bundle_fixture(self, directory, constrained=False, session=False):
+        constrained = constrained or session
         base, core = Path(directory) / 'base', Path(directory) / 'core'
         build_root, backend = base / 'llama-build', base / 'ml/native-backend'
         wrappers = core / 'workers/volparossa-ml/native-cpu'
@@ -702,23 +703,30 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
             return {'bytes': len(content), 'sha256': hashlib.sha256(content).hexdigest()}
         library = artifact(build_root / 'libvolparossa_llama_cpu.so', b'inert library bytes, never loaded')
         (backend / 'libvolparossa_llama_cpu.so').write_bytes((build_root / 'libvolparossa_llama_cpu.so').read_bytes())
-        wrapper = {name: artifact(wrappers / name, b'inert source ' + name.encode())
-                   for name in (NATIVE.CONSTRAINED_WRAPPERS if constrained else NATIVE.LEGACY_WRAPPERS)}
-        raw_build = dict(version=3 if constrained else 2, kind=KIND, source_commit=NATIVE.SOURCE, source_tree='b' * 40,
+        names = NATIVE.SESSION_WRAPPERS if session else (
+            NATIVE.CONSTRAINED_WRAPPERS if constrained else NATIVE.LEGACY_WRAPPERS)
+        wrapper = {name: artifact(wrappers / name, b'inert source ' + name.encode()) for name in names}
+        raw_build = dict(version=4 if session else (3 if constrained else 2),
+                         kind=KIND, source_commit=NATIVE.SOURCE, source_tree='b' * 40,
                          abi_version=1, jobs=2, cpu='avx2_fma_f16c', models_loaded=False, downloads=False,
                          install=False, sanitizers=False, provisionable=True, quantization=False,
                          library={'path': 'libvolparossa_llama_cpu.so', **library}, wrapper_sources=wrapper,
                          dynamic_dependencies=['libc.so.6'])
         if constrained:
             raw_build['output_constraints'] = [NATIVE.OUTPUT_CONSTRAINT]
+        if session:
+            raw_build['native_sessions'] = [NATIVE.NATIVE_SESSION]
         for root in (build_root, backend):
             (root / 'build.json').write_text(json.dumps(raw_build))
         build_hash = hashlib.sha256((build_root / 'build.json').read_bytes()).hexdigest()
         gguf = artifact(backend / 'model.gguf', b'inert gguf bytes, never loaded')
-        manifest = dict(version=2 if constrained else 1, model_profile=NATIVE.MODEL, build_manifest_sha256=build_hash,
+        manifest = dict(version=3 if session else (2 if constrained else 1),
+                        model_profile=NATIVE.MODEL, build_manifest_sha256=build_hash,
                         library=raw_build['library'], gguf={'path': 'model.gguf', **gguf}, source_weights_sha256='c' * 64)
         if constrained:
             manifest['output_constraints'] = [NATIVE.OUTPUT_CONSTRAINT]
+        if session:
+            manifest['native_sessions'] = [NATIVE.NATIVE_SESSION]
         (backend / 'backend.json').write_text(json.dumps(manifest))
         report = dict(native_cpu_converter={'implementation': KIND, 'dependencies': {'sentencepiece': '0.2.1'}},
                       native_backend={'kind': KIND, 'root': str(backend),
@@ -769,8 +777,13 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
                     build = NATIVE.validate_build(core, base)
                 with patch.object(NATIVE, 'module', return_value=parser):
                     backend = NATIVE.validate_provision(core, base, report, build)
-                if selected:
+                # Historical artifacts remain readable, but this new actual
+                # requires a separately verified owner-session capability.
+                with self.assertRaisesRegex(ValueError, 'native_output_constraint_required'):
                     NATIVE.require_output_constraint(build, backend)
+                self.assertNotIn('native_sessions', build)
+                self.assertNotIn('native_sessions', backend)
+                if selected:
                     self.assertEqual(build['build_version'], 3)
                     self.assertEqual(backend['build_version'], 3)
                     self.assertEqual(backend['backend_version'], 2)
@@ -778,8 +791,6 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
                     self.assertEqual(backend['output_constraints'], [NATIVE.OUTPUT_CONSTRAINT])
                     self.assertEqual(set(build['wrapper_sources']), set(NATIVE.CONSTRAINED_WRAPPERS))
                 else:
-                    with self.assertRaisesRegex(ValueError, 'native_output_constraint_required'):
-                        NATIVE.require_output_constraint(build, backend)
                     self.assertNotIn('build_version', build)
                     self.assertNotIn('output_constraints', build)
                     self.assertNotIn('backend_version', backend)
@@ -787,6 +798,127 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
                 self.assertFalse(build['models_loaded'])
                 self.assertNotIn('passed', backend)
                 self.assertNotIn(str(base), json.dumps(backend))
+
+    def test_session_build4_backend3_bind_seven_exact_sources_without_execution_claims(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base, core, report, builder, parser = self.bundle_fixture(temp, session=True)
+            with patch.object(NATIVE, 'module', return_value=builder):
+                build = NATIVE.validate_build(core, base)
+            with patch.object(NATIVE, 'module', return_value=parser):
+                backend = NATIVE.validate_provision(core, base, report, build)
+            NATIVE.require_output_constraint(build, backend)
+            self.assertEqual((build['build_version'], backend['build_version'], backend['backend_version']),
+                             (4, 4, 3))
+            self.assertEqual(build['native_sessions'], [NATIVE.NATIVE_SESSION])
+            self.assertEqual(backend['native_sessions'], [NATIVE.NATIVE_SESSION])
+            self.assertEqual(set(build['wrapper_sources']), set(NATIVE.SESSION_WRAPPERS))
+            self.assertEqual(set(NATIVE.SESSION_WRAPPERS) - set(NATIVE.CONSTRAINED_WRAPPERS),
+                             {'session-state.h'})
+            self.assertEqual(len(NATIVE.SESSION_WRAPPERS), 7)
+            self.assertFalse(build['models_loaded'])
+            self.assertEqual(build['jobs'], 2)
+            for token in ('passed', 'child_reaped', 'session_closed', str(base)):
+                self.assertNotIn(token, json.dumps(backend))
+
+    def test_session_build_capability_or_source_substitution_is_rejected(self):
+        for changes in ({'version': True}, {'version': 5}, {'version': 3},
+                        {'native_sessions': None}, {'native_sessions': []},
+                        {'native_sessions': ['unknown']},
+                        {'native_sessions': [NATIVE.NATIVE_SESSION, NATIVE.NATIVE_SESSION]},
+                        {'output_constraints': []}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temp:
+                base, core, _, builder, _ = self.bundle_fixture(temp, session=True)
+                path = base / 'llama-build/build.json'
+                path.write_text(json.dumps(json.loads(path.read_text()) | changes))
+                with patch.object(NATIVE, 'module', return_value=builder), self.assertRaises(ValueError):
+                    NATIVE.validate_build(core, base)
+        for mutation in ('missing', 'modified', 'unlisted', 'extra'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                base, core, _, builder, _ = self.bundle_fixture(temp, session=True)
+                path = core / 'workers/volparossa-ml/native-cpu/session-state.h'
+                if mutation == 'missing':
+                    path.unlink()
+                elif mutation == 'modified':
+                    path.write_bytes(b'PRIVATE-CANARY changed source')
+                else:
+                    manifest = base / 'llama-build/build.json'
+                    value = json.loads(manifest.read_text())
+                    if mutation == 'unlisted':
+                        del value['wrapper_sources']['session-state.h']
+                    else:
+                        value['wrapper_sources']['private.c'] = value['wrapper_sources']['session-state.h']
+                    manifest.write_text(json.dumps(value))
+                with patch.object(NATIVE, 'module', return_value=builder), self.assertRaises((OSError, ValueError)):
+                    NATIVE.validate_build(core, base)
+
+    def test_session_backend_rejects_missing_mixed_and_copied_capability(self):
+        for changes in ({'version': True}, {'version': 4}, {'version': 2},
+                        {'native_sessions': None}, {'native_sessions': []},
+                        {'native_sessions': ['unknown']}, {'output_constraints': []}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temp:
+                base, core, report, builder, parser = self.bundle_fixture(temp, session=True)
+                with patch.object(NATIVE, 'module', return_value=builder):
+                    build = NATIVE.validate_build(core, base)
+                path = base / 'ml/native-backend/backend.json'
+                path.write_text(json.dumps(json.loads(path.read_text()) | changes))
+                report['native_backend']['backend_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+                with patch.object(NATIVE, 'module', return_value=parser), self.assertRaises(ValueError):
+                    NATIVE.validate_provision(core, base, report, build)
+        for changes in ({'version': 3}, {'native_sessions': []}):
+            with self.subTest(copied=changes), tempfile.TemporaryDirectory() as temp:
+                base, core, report, builder, parser = self.bundle_fixture(temp, session=True)
+                with patch.object(NATIVE, 'module', return_value=builder):
+                    build = NATIVE.validate_build(core, base)
+                copied = base / 'ml/native-backend/build.json'
+                copied.write_text(json.dumps(json.loads(copied.read_text()) | changes))
+                digest = hashlib.sha256(copied.read_bytes()).hexdigest()
+                build['build_manifest_sha256'] = digest
+                manifest = base / 'ml/native-backend/backend.json'
+                manifest.write_text(json.dumps(json.loads(manifest.read_text()) | {'build_manifest_sha256': digest}))
+                report['native_backend']['backend_sha256'] = hashlib.sha256(manifest.read_bytes()).hexdigest()
+                with patch.object(NATIVE, 'module', return_value=parser), self.assertRaises(ValueError):
+                    NATIVE.validate_provision(core, base, report, build)
+
+    def test_legacy_versions_reject_unsolicited_session_capability(self):
+        for constrained in (False, True):
+            for target in ('build', 'manifest', 'projection'):
+                with self.subTest(constrained=constrained, target=target), tempfile.TemporaryDirectory() as temp:
+                    base, core, report, builder, parser = self.bundle_fixture(temp, constrained=constrained)
+                    if target == 'build':
+                        path = base / 'llama-build/build.json'
+                        path.write_text(json.dumps(json.loads(path.read_text()) |
+                                                   {'native_sessions': [NATIVE.NATIVE_SESSION]}))
+                        with patch.object(NATIVE, 'module', return_value=builder), self.assertRaises(ValueError):
+                            NATIVE.validate_build(core, base)
+                    else:
+                        with patch.object(NATIVE, 'module', return_value=builder):
+                            build = NATIVE.validate_build(core, base)
+                        if target == 'manifest':
+                            path = base / 'ml/native-backend/backend.json'
+                            path.write_text(json.dumps(json.loads(path.read_text()) |
+                                                       {'native_sessions': [NATIVE.NATIVE_SESSION]}))
+                            report['native_backend']['backend_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+                        else:
+                            build['native_sessions'] = [NATIVE.NATIVE_SESSION]
+                        with patch.object(NATIVE, 'module', return_value=parser), self.assertRaises(ValueError):
+                            NATIVE.validate_provision(core, base, report, build)
+
+    def test_current_trial_requires_exact_session_on_both_closed_projections(self):
+        build = dict(build_version=4, output_constraints=[NATIVE.OUTPUT_CONSTRAINT],
+                     native_sessions=[NATIVE.NATIVE_SESSION])
+        backend = dict(build, backend_version=3)
+        NATIVE.require_output_constraint(build, backend)
+        for field in ('build_version', 'output_constraints', 'native_sessions'):
+            for side in ('build', 'backend'):
+                for value in (None, [], True, 'PRIVATE-CANARY'):
+                    changed_build, changed_backend = copy.deepcopy(build), copy.deepcopy(backend)
+                    (changed_build if side == 'build' else changed_backend)[field] = value
+                    with self.subTest(field=field, side=side, value=value), \
+                            self.assertRaisesRegex(ValueError, 'native_output_constraint_required'):
+                        NATIVE.require_output_constraint(changed_build, changed_backend)
+        for old in ({}, dict(backend, backend_version=2), dict(backend, build_version=3)):
+            with self.assertRaisesRegex(ValueError, 'native_output_constraint_required'):
+                NATIVE.require_output_constraint(build, old)
 
     def test_constrained_build_cannot_omit_substitute_or_downgrade_wrapper_capability(self):
         changes = ({'version': True}, {'version': 4}, {'version': 2}, {'output_constraints': None},

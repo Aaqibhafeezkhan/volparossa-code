@@ -159,7 +159,7 @@ function validateCall(item, tools, seen) {
   check(!seen.has(item.call_id) && tools.get(toolKey(item)) === (custom ? 'custom' : 'function'));
   if (custom) text(item.input, 4096); else payload(item.arguments);
 }
-function validateResult(value, caps, input) {
+function validateConversationResult(value, caps, input, version) {
   keys(value, ['version', 'operation', 'model_profile', 'execution_complete', 'turn_complete', 'output',
     'prompt_tokens', 'generated_tokens', 'limits', 'local_only', 'private_data_supported', 'tool_execution',
     'distributed_execution_claimed', 'private_training_claimed', 'model_answer_correctness_proven', 'cleanup'],
@@ -173,10 +173,19 @@ function validateResult(value, caps, input) {
     validateConversation(input, caps);
     check(value.output_constraint === input.output_constraint, 'output_constraint_mismatch');
   }
-  keys(value.cleanup, ['complete', 'retained_input', 'retained_report']);
-  check(value.cleanup.complete === true && value.cleanup.retained_input === false &&
-    value.cleanup.retained_report === false, 'cleanup_unconfirmed');
-  check(value.version === 1 && value.operation === 'compute_private_conversation' &&
+  if (version === 1) {
+    keys(value.cleanup, ['complete', 'retained_input', 'retained_report']);
+    check(value.cleanup.complete === true && value.cleanup.retained_input === false &&
+      value.cleanup.retained_report === false, 'cleanup_unconfirmed');
+  } else {
+    // Request-file removal is deliberately NOT a claim that the warm worker or
+    // its private KV state has gone. A separate joined session-close is required.
+    keys(value.cleanup, ['version', 'request_files_removed', 'session_closed', 'session_private_state_retained']);
+    check(value.cleanup.version === 2 && value.cleanup.request_files_removed === true &&
+      value.cleanup.session_closed === false && value.cleanup.session_private_state_retained === true,
+    'cleanup_unconfirmed');
+  }
+  check(value.version === version && value.operation === 'compute_private_conversation' &&
     value.model_profile === caps.model_profile && value.execution_complete === true && value.local_only === true &&
     value.private_data_supported === true && value.tool_execution === false &&
     value.distributed_execution_claimed === false && value.private_training_claimed === false &&
@@ -198,6 +207,13 @@ function validateResult(value, caps, input) {
     validateCall(output, tools, seen);
   }
   return value;
+}
+
+function validateResult(value, caps, input) { return validateConversationResult(value, caps, input, 1); }
+function validateNativeSessionResult(value, caps, input) {
+  check(caps.native_session_version === 1 && caps.inference_backend === 'llama_cpp_bf16_v1',
+    'incompatible_capabilities');
+  return validateConversationResult(value, caps, input, 2);
 }
 
 class PrivateConversation extends PrivateCompute {
@@ -273,5 +289,6 @@ class PrivateConversation extends PrivateCompute {
   }
 }
 
-module.exports = { PrivateConversation, validateConversation, validateResult, expectedLimits, requestLimit, capabilities,
+module.exports = { PrivateConversation, validateConversation, validateResult, validateNativeSessionResult,
+  expectedLimits, requestLimit, capabilities,
   OUTPUT_CONSTRAINT, check, keys, text, identifier, object, fail };

@@ -21,7 +21,8 @@ function fixture(Task, receive, options = {}) {
   const hooks = {Task, preflight: async () => options.capabilities ??
     {...caps(options.model ?? DEFAULT_MODEL), generation_policy_version: 1, generation_policies: ['greedy_v1'],
       execution_error_version: 1},
-    provider: async value => { binding.provider = value.model; binding.outputConstraint = value.outputConstraint; return provider; },
+    provider: async value => { binding.provider = value.model; binding.outputConstraint = value.outputConstraint;
+      binding.nativeSession = value.nativeSession; return provider; },
     prepare(cooperative) { assert.equal(cooperative, options.cooperative ?? false); },
     cooperative: () => options.cooperative ?? false, port: async () => 1235, approvalMs: 15,
     spawn(binary, args, config) {
@@ -61,6 +62,8 @@ test('explicit constraint is negotiated before runtime startup and bound to the 
   const f = fixture(Task, (_value, input) => input.end(), {model, capabilities, outputConstraint: selected});
   assert.equal(await f.done, 0);
   assert.equal(f.binding.outputConstraint, selected);
+  assert.equal(f.binding.nativeSession, true);
+  assert.deepEqual(f.observed, ['ready', 'provider-close', 'result', 'client-close', 'SIGTERM']);
   for (const output_constraints of [[], undefined]) {
     const rejected = fixture(Task, (_value, input) => input.end(), {model, outputConstraint: selected,
       capabilities: {...capabilities, output_constraints}});
