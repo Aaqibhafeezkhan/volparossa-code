@@ -1036,3 +1036,34 @@ contracts, 92 Python OpenCode checks (two explicit retained-source skips) and
 ten session-selection checks. The actual checkout `9f79e931` merges `689c7dd`
 into `714904a3` and has the exact candidate tree. Original log ZIP SHA-256:
 `8b59657a74190a61d8d0cf9177d96c0d488aec064e38faa54c30c5bd710ea978`.
+
+The selected-output [trial `38675278393`](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38675278393)
+on Code `6aa6291a1d7e591d1bfaff1b276ca2695a3c5d93` / core
+`9d044921f7e684737f9b10868429de42bc5416c9` remains **failed**, with a new
+partial result: one model-generated function call reaches the actual OpenCode
+runtime and its `read` tool completes. Native build, conversion and provisioning
+pass with backend manifest v2/build v3 and `qwen_tagged_tool_json_v1`.
+
+Provider counters record seven submitted requests: one completed function call
+and six `execution_failed` errors, with cleanup confirmed for all seven.
+Invalid-output and execution-budget-error counters are zero. The retained core
+diagnostic contains only `result_observed`; it does not identify why the six
+requests failed. The read tool's pending/running/completed counters are observed
+transitions of one call, not three different reads.
+
+The task stops after 588,147 ms with `opencode_task_incomplete`, no changed
+fixture, edit, test or independent verification, and no completed native turn.
+`approved_read` remains zero: a completed runtime read is not a separately
+approved read event. Core cgroup peak is 7,632,764,928 bytes within 11 GiB, with
+zero OOM kills and swap. No raw model output is exported.
+
+Reported runtime/project, provisioning-group, guest-unit/private-data,
+QEMU/scratch and owned CI-host cleanup complete. Scoped normalized route/DNS
+observations match; raw IPv6 route bytes differ. This is not byte-identical host
+state, a complete firewall audit, general coding quality or protected peer
+execution. The prior invalid-output and deadline failures remain unchanged.
+
+Original artifact `11946278747` ZIP SHA-256:
+`487bee78bb4857c6a5b48df7d69df21ceeb608ded9d9264122668480f62afa74`;
+original job-log ZIP SHA-256:
+`5ff8a4055bf966f192f80b366cbeb8428d77793c6ee6525b3109eecf292af36e`.

@@ -74,11 +74,12 @@ adapter, editor and lifecycle behavior. The complete model-driven OpenCode
 read/edit/test loop, native editor UI operation, protected peer execution and a
 finished immune-policy path remain unproved.
 
-**Latest real native CPU trial:** the [4B run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/37683661957)
-completed model preparation but returned an invalid model result. No usable turn,
-tool action, edit or test completed. An explicit tool-output constraint is now
-wired into the core and OpenCode; its source checks do not yet prove a successful
-model-driven coding task. See the
+**Latest real native CPU trial:** the [4B run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38675278393)
+completed model preparation, returned one model-generated function call and
+completed one OpenCode `read` action. Six other requests failed; no edit,
+test or complete coding task is proved. The selected tool-output constraint and
+passing source checks do not turn this partial result into end-to-end success.
+See the
 [native CPU evidence](docs/OPENCODE.md#explicit-native-cpu-candidate).
 
 **Real public peer proof:** a separate owner command successfully obtained a
