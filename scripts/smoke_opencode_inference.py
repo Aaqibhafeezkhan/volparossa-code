@@ -36,7 +36,7 @@ LARGE_CORE = '6a517b576baa17e7329661ee0476d1848081d114'
 MODEL_PROFILES = (MODEL, LARGE_MODEL)
 INFERENCE_BACKENDS = ('torch', 'llama_cpp_bf16_v1')
 # Native validation, output constraints and closed task diagnostics are source-bound.
-NATIVE_CORE = '0de65f423a6d96fa565facf6f283efae70adf2bd'
+NATIVE_CORE = 'a37f5cd0b1ec212632dcff95cac4e6da589027e9'
 NATIVE_SOURCE = '7fe450e19305b828c199d602c23a8337aaa1f03b'
 OUTPUT_CONSTRAINT = 'qwen_tagged_tool_json_v1'
 ENV = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'}
