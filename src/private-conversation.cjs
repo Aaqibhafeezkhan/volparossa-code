@@ -41,6 +41,7 @@ const NATIVE_PROFILES = Object.freeze({
   'qwen3-4b-instruct-2507-v1': {context: 262144, template: 'qwen3-tools-instruct-2507-v1'},
 });
 const nativeProfile = model => Object.hasOwn(NATIVE_PROFILES, model);
+const OUTPUT_CONSTRAINT = 'qwen_tagged_tool_json_v1';
 function expectedLimits(model) {
   check(Object.hasOwn(PROFILES, model), 'incompatible_capabilities');
   const [prompt, output, bytes] = PROFILES[model];
@@ -63,14 +64,15 @@ function equalLimits(value, expected, optional = []) {
   keys(value, Object.keys(expected), optional);
   check(Object.entries(expected).every(([key, item]) => value[key] === item), 'incompatible_capabilities');
 }
-function capabilities(value, generationPolicyVersion, executionErrorVersion) {
+function capabilities(value, generationPolicyVersion, executionErrorVersion, outputConstraintVersion) {
   check(object(value));
   const generation = generationPolicyVersion === 1 ? ['generation_policy_version', 'generation_policies'] : [];
   const execution = executionErrorVersion === 1 ? ['execution_error_version'] : [];
+  const constraint = outputConstraintVersion === 1 ? ['output_constraint_version', 'output_constraints'] : [];
   const backend = ['inference_backend', 'required_generation_policy'];
   equalLimits(value, { ...expectedLimits(value.model_profile), execution_slots: 1,
     max_request_bytes: requestLimit(value.model_profile), max_response_bytes: 65536 },
-  ['max_seconds', 'quarantined', ...generation, ...execution, ...backend]);
+  ['max_seconds', 'quarantined', ...generation, ...execution, ...constraint, ...backend]);
   // The owner-selected core may expose this one backend restriction, not a
   // frontend executor choice or independent proof of the returned backend.
   if (backend.some(key => Object.hasOwn(value, key))) {
@@ -88,11 +90,19 @@ function capabilities(value, generationPolicyVersion, executionErrorVersion) {
     Object.freeze(value.generation_policies);
   }
   if (executionErrorVersion === 1) check(value.execution_error_version === 1, 'incompatible_capabilities');
+  if (outputConstraintVersion === 1) {
+    check(value.output_constraint_version === 1 && Array.isArray(value.output_constraints) &&
+      (value.output_constraints.length === 0 || value.output_constraints.length === 1 &&
+       value.output_constraints[0] === OUTPUT_CONSTRAINT &&
+       value.model_profile === 'qwen3-4b-instruct-2507-v1' &&
+       value.inference_backend === 'llama_cpp_bf16_v1'), 'unsupported_output_constraint');
+    Object.freeze(value.output_constraints);
+  }
   return Object.freeze(value);
 }
 
 function validateConversation(value, limits = expectedLimits('smollm2-360m-v1')) {
-  keys(value, ['version', 'visibility', 'instructions', 'history', 'tools'], ['generation_policy']);
+  keys(value, ['version', 'visibility', 'instructions', 'history', 'tools'], ['generation_policy', 'output_constraint']);
   check(value.version === 1 && value.visibility === 'private_local');
   if (Object.hasOwn(value, 'generation_policy')) {
     check(value.generation_policy === 'greedy_v1' && nativeProfile(limits.model_profile) &&
@@ -102,6 +112,12 @@ function validateConversation(value, limits = expectedLimits('smollm2-360m-v1'))
   text(value.instructions, limits.max_instructions_bytes);
   check(Array.isArray(value.history) && value.history.length >= 1 && value.history.length <= limits.max_history_items &&
     Array.isArray(value.tools) && value.tools.length <= limits.max_tools);
+  if (Object.hasOwn(value, 'output_constraint')) {
+    check(value.output_constraint === OUTPUT_CONSTRAINT && value.generation_policy === 'greedy_v1' &&
+      limits.model_profile === 'qwen3-4b-instruct-2507-v1' && limits.inference_backend === 'llama_cpp_bf16_v1' &&
+      limits.output_constraint_version === 1 && limits.output_constraints?.includes(OUTPUT_CONSTRAINT) &&
+      value.tools.length >= 1 && value.tools.length <= 32, 'unsupported_output_constraint');
+  }
   const tools = new Map(), seen = new Map(), open = new Set();
   for (const tool of value.tools) {
     check(tool.type === 'function' || tool.type === 'custom');
@@ -147,10 +163,15 @@ function validateResult(value, caps, input) {
   keys(value, ['version', 'operation', 'model_profile', 'execution_complete', 'turn_complete', 'output',
     'prompt_tokens', 'generated_tokens', 'limits', 'local_only', 'private_data_supported', 'tool_execution',
     'distributed_execution_claimed', 'private_training_claimed', 'model_answer_correctness_proven', 'cleanup'],
-  Object.hasOwn(input, 'generation_policy') ? ['generation_policy'] : []);
+  [...(Object.hasOwn(input, 'generation_policy') ? ['generation_policy'] : []),
+    ...(Object.hasOwn(input, 'output_constraint') ? ['output_constraint'] : [])]);
   if (Object.hasOwn(input, 'generation_policy')) {
     validateConversation(input, caps);
     check(value.generation_policy === input.generation_policy, 'generation_policy_mismatch');
+  }
+  if (Object.hasOwn(input, 'output_constraint')) {
+    validateConversation(input, caps);
+    check(value.output_constraint === input.output_constraint, 'output_constraint_mismatch');
   }
   keys(value.cleanup, ['complete', 'retained_input', 'retained_report']);
   check(value.cleanup.complete === true && value.cleanup.retained_input === false &&
@@ -180,12 +201,14 @@ function validateResult(value, caps, input) {
 }
 
 class PrivateConversation extends PrivateCompute {
-  constructor(socketPath, { generationPolicyVersion, executionErrorVersion } = {}) {
+  constructor(socketPath, { generationPolicyVersion, executionErrorVersion, outputConstraintVersion } = {}) {
     super(socketPath);
     check(generationPolicyVersion === undefined || generationPolicyVersion === 1, 'unsupported_generation_policy');
     this.generationPolicyVersion = generationPolicyVersion;
     check(executionErrorVersion === undefined || executionErrorVersion === 1, 'unsupported_execution_error_version');
     this.executionErrorVersion = executionErrorVersion;
+    check(outputConstraintVersion === undefined || outputConstraintVersion === 1, 'unsupported_output_constraint_version');
+    this.outputConstraintVersion = outputConstraintVersion;
   }
   // These hooks reuse only the already-tested transport. Q&A callers and bytes
   // remain unchanged; this instance cannot silently use the old handshake.
@@ -194,7 +217,8 @@ class PrivateConversation extends PrivateCompute {
     // the legacy Q&A class and its 32KiB framing remain byte-for-byte unchanged.
     if (operation.type === 'capabilities') operation = { type: 'conversation_capabilities',
       ...(this.generationPolicyVersion === 1 ? { generation_policy_version: 1 } : {}),
-      ...(this.executionErrorVersion === 1 ? { execution_error_version: 1 } : {}) };
+      ...(this.executionErrorVersion === 1 ? { execution_error_version: 1 } : {}),
+      ...(this.outputConstraintVersion === 1 ? { output_constraint_version: 1 } : {}) };
     try {
       const body = Buffer.from(JSON.stringify({ version: 1, id, operation }));
       check(body.length > 0 && body.length <= (this.caps?.max_request_bytes ?? 32768), 'request_bound');
@@ -234,7 +258,8 @@ class PrivateConversation extends PrivateCompute {
     if (message.event === 'conversation_capabilities') {
       keys(message, ['version', 'id', 'event', 'capabilities']);
       check(this.state === 'connecting' && message.id === this.handshake?.id, 'invalid_response');
-      this.caps = capabilities(message.capabilities, this.generationPolicyVersion, this.executionErrorVersion);
+      this.caps = capabilities(message.capabilities, this.generationPolicyVersion, this.executionErrorVersion,
+        this.outputConstraintVersion);
       this.state = 'open';
       clearTimeout(this.handshake.timer);
       this.handshake.resolve(this.caps);
@@ -249,4 +274,4 @@ class PrivateConversation extends PrivateCompute {
 }
 
 module.exports = { PrivateConversation, validateConversation, validateResult, expectedLimits, requestLimit, capabilities,
-  check, keys, text, identifier, object, fail };
+  OUTPUT_CONSTRAINT, check, keys, text, identifier, object, fail };

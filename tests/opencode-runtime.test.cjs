@@ -43,6 +43,11 @@ test('OpenCode runtime config accepts only exact explicit pinned inputs', () => 
   const config = {version: 1, opencode: '/fixture/opencode', opencodeSha256: 'a'.repeat(64),
     buildReport: '/fixture/BUILD_REPORT.json', node: '/fixture/node', nodeSha256: 'b'.repeat(64), socketPath: '/fixture/private/core.sock'};
   assert.deepEqual(configuration(config, '/fixture/project'), config);
+  const constrained = {...config, outputConstraint: 'qwen_tagged_tool_json_v1'};
+  assert.deepEqual(configuration(constrained, '/fixture/project'), constrained);
+  for (const outputConstraint of [null, undefined, false, 'grammar']) {
+    assert.throws(() => configuration({...config, outputConstraint}, '/fixture/project'), /opencode_runtime/);
+  }
   for (const changed of [{...config, appServer: '/fixture/codex'}, {...config, opencodeSha256: 'bad'},
     {...config, socketPath: 'relative'}, {...config, version: 2}]) {
     assert.throws(() => configuration(changed, '/fixture/project'), /opencode_runtime/);

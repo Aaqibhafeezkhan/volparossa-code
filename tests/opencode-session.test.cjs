@@ -21,7 +21,7 @@ function fixture(Task, receive, options = {}) {
   const hooks = {Task, preflight: async () => options.capabilities ??
     {...caps(options.model ?? DEFAULT_MODEL), generation_policy_version: 1, generation_policies: ['greedy_v1'],
       execution_error_version: 1},
-    provider: async value => { binding.provider = value.model; return provider; },
+    provider: async value => { binding.provider = value.model; binding.outputConstraint = value.outputConstraint; return provider; },
     prepare(cooperative) { assert.equal(cooperative, options.cooperative ?? false); },
     cooperative: () => options.cooperative ?? false, port: async () => 1235, approvalMs: 15,
     spawn(binary, args, config) {
@@ -48,9 +48,26 @@ function fixture(Task, receive, options = {}) {
     }
     else receive(value, input);
   }, () => assert.fail('owner frame'));
-  return {observed, input, binding, done: runSession({input, output, events}, hooks).finally(unbind)};
+  return {observed, input, binding, done: runSession({input, output, events,
+    outputConstraint: options.outputConstraint}, hooks).finally(unbind)};
 }
 const result = {text: 'Fixture only', commands: 0, nativeTurnCompleted: true, taskVerified: false};
+test('explicit constraint is negotiated before runtime startup and bound to the provider', async () => {
+  const selected = 'qwen_tagged_tool_json_v1', model = 'qwen3-4b-instruct-2507-v1';
+  class Task { async run() { return result; } }
+  const capabilities = {...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'],
+    execution_error_version: 1, inference_backend: 'llama_cpp_bf16_v1', required_generation_policy: 'greedy_v1',
+    output_constraint_version: 1, output_constraints: [selected]};
+  const f = fixture(Task, (_value, input) => input.end(), {model, capabilities, outputConstraint: selected});
+  assert.equal(await f.done, 0);
+  assert.equal(f.binding.outputConstraint, selected);
+  for (const output_constraints of [[], undefined]) {
+    const rejected = fixture(Task, (_value, input) => input.end(), {model, outputConstraint: selected,
+      capabilities: {...capabilities, output_constraints}});
+    assert.equal(await rejected.done, 1);
+    assert.equal(rejected.binding.provider, undefined);
+  }
+});
 test('owner connects pinned runtime, forwards exact approvals and waits for core/process cleanup', async () => {
   class Task {
     constructor(_client, approve) { this.approve = approve; }

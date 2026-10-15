@@ -62,6 +62,28 @@ the original task budget. See [editor setup and check limitations](OWNER_VERIFIC
 
 ### Core-selected coding profiles
 
+An experimental owner-selected `outputConstraint: "qwen_tagged_tool_json_v1"`
+field may be added to `volparossaCode.openCodeRuntime`. It requires the matching
+new core capability and native Qwen4B backend; an older or unsupported core is
+refused before OpenCode starts. Omitting the field preserves the existing
+session and request forms. Opening a workspace still starts nothing.
+
+Each provider connection negotiates the same capability. Requests with offered
+tools carry the selector; requests without tools omit it. Ordinary answers
+remain allowed, and tools still require their existing execution authority.
+The core controls alias derivation and constrained generation; the application
+accepts neither a caller-supplied grammar nor an unrequested result claim. There
+is no generated-output repair, forced tool use, model substitution or larger
+budget. This profile does not imply arbitrary JSON-schema validation or private
+execution on other peers.
+
+76 targeted Node contract tests and ten inert Python session-selection tests
+pass. They cover actual HTTP/Unix framing with synthetic core replies, legacy
+compatibility, result binding, namespace command selection and startup refusal.
+No model or OpenCode binary ran in those tests. Core native compilation and a
+new pinned real OpenCode edit/test trial remain required; the earlier invalid
+JSON trial is not considered fixed by these protocol checks.
+
 - `qwen3-0.6b-v1`: the unchanged default; native template
   `qwen3-tools-nonthinking-v1`, model context 32,768 tokens.
 - `qwen3-4b-instruct-2507-v1`: the explicit larger profile; native template

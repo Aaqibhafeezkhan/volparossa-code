@@ -9,7 +9,7 @@ const http = require('node:http');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { TextDecoder } = require('node:util');
 const { PrivateConversation, validateConversation, expectedLimits, check, keys, text,
-  identifier, object, fail } = require('./private-conversation.cjs');
+  identifier, object, fail, OUTPUT_CONSTRAINT } = require('./private-conversation.cjs');
 const { parseJson } = require('./responses-provider.cjs');
 const { PROVIDER_ERRORS, emptyProviderDiagnostic } = require('./opencode-bridge.cjs');
 const { terminalCleanupConfirmed } = require('./private-compute.cjs');
@@ -66,7 +66,11 @@ function toolChoice(request, tools) {
   return choice;
 }
 
-function toConversation(request, model, caps) {
+function toConversation(request, model, caps, outputConstraint) {
+  check(outputConstraint === undefined || outputConstraint === OUTPUT_CONSTRAINT, 'unsupported_output_constraint');
+  if (outputConstraint !== undefined) check(caps.output_constraint_version === 1 &&
+    caps.output_constraints?.includes(outputConstraint) && model === 'qwen3-4b-instruct-2507-v1' &&
+    caps.inference_backend === 'llama_cpp_bf16_v1', 'unsupported_output_constraint');
   keys(request, ['model', 'messages'], ['stream', 'stream_options', 'tools', 'tool_choice',
     'max_tokens', 'temperature', 'top_p', 'frequency_penalty', 'presence_penalty', 'stop', 'seed',
     'response_format', 'user', 'reasoning_effort', 'verbosity', 'parallel_tool_calls', 'n', 'store']);
@@ -146,7 +150,8 @@ function toConversation(request, model, caps) {
   }
   const conversation = { version: 1, visibility: 'private_local',
     instructions: instructions.length ? instructions.join('\n\n') : 'Answer the user; tool proposals require separate execution authority.',
-    history, tools, ...(greedy ? { generation_policy: 'greedy_v1' } : {}) };
+    history, tools, ...(greedy ? { generation_policy: 'greedy_v1' } : {}),
+    ...(outputConstraint !== undefined && tools.length ? { output_constraint: outputConstraint } : {}) };
   validateConversation(conversation, caps);
   return conversation;
 }
@@ -211,8 +216,10 @@ async function readBody(request) {
   catch (error) { throw error.message?.startsWith('private_compute_') ? error : fail('invalid_json'); }
 }
 
-async function startChatCompletionsProvider({ socketPath, model, diagnostics = false }) {
+async function startChatCompletionsProvider({ socketPath, model, diagnostics = false, outputConstraint }) {
   expectedLimits(model);
+  check(outputConstraint === undefined || outputConstraint === OUTPUT_CONSTRAINT &&
+    model === 'qwen3-4b-instruct-2507-v1', 'unsupported_output_constraint');
   check(typeof diagnostics === 'boolean', 'diagnostic_scope');
   new PrivateConversation(socketPath); // Path validation only; launch does not start compute.
   const bearerToken = randomBytes(32).toString('base64url');
@@ -241,7 +248,8 @@ async function startChatCompletionsProvider({ socketPath, model, diagnostics = f
     if (closing || active) { errorReply(response, 503, 'busy'); return; }
     if (Number(request.headers['content-length'] ?? 0) > HTTP_BYTES) { errorReply(response, 413, 'request_bound'); return; }
     const controller = new AbortController();
-    const client = new PrivateConversation(socketPath, { generationPolicyVersion: 1, executionErrorVersion: 1 });
+    const client = new PrivateConversation(socketPath, { generationPolicyVersion: 1, executionErrorVersion: 1,
+      ...(outputConstraint !== undefined ? { outputConstraintVersion: 1 } : {}) });
     const owner = { controller, client, done: null };
     active = owner;
     response.once('close', () => { if (!response.writableFinished) controller.abort(); });
@@ -251,7 +259,7 @@ async function startChatCompletionsProvider({ socketPath, model, diagnostics = f
         const requestBody = await readBody(request);
         if (controller.signal.aborted) throw fail('cancelled');
         const caps = await client.connect();
-        const conversation = toConversation(requestBody, model, caps);
+        const conversation = toConversation(requestBody, model, caps, outputConstraint);
         if (controller.signal.aborted) throw fail('cancelled');
         observed.submitted++;
         if (diagnostics) count(summary, 'submitted');

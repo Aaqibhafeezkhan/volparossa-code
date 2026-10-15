@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PIN = 'aec0b9a6d8898f68f923aaf08b7306d931fd9d76'
 FIELDS = {'version', 'opencode', 'opencodeSha256', 'buildReport', 'node', 'nodeSha256', 'socketPath'}
 COOPERATIVE_FIELD = 'cooperativeSocketPath'
+OUTPUT_CONSTRAINT = 'qwen_tagged_tool_json_v1'
 SOURCES = ('private-compute.cjs', 'private-conversation.cjs', 'responses-provider.cjs',
            'chat-completions-provider.cjs', 'opencode-config.cjs', 'opencode-client.cjs',
            'opencode-task.cjs', 'opencode-bridge.cjs')
@@ -73,8 +74,10 @@ def account_home():
 
 
 def validate(config, workspace):
-    require(os.getuid() != 0 and type(config) is dict and set(config) in (FIELDS, FIELDS | {COOPERATIVE_FIELD})
+    require(os.getuid() != 0 and type(config) is dict and FIELDS <= set(config)
+            and set(config) <= FIELDS | {COOPERATIVE_FIELD, 'outputConstraint'}
             and type(config['version']) is int and config['version'] == 1)
+    require('outputConstraint' not in config or config['outputConstraint'] == OUTPUT_CONSTRAINT)
     require(all(type(config[name]) is str and 0 < len(config[name]) <= 4096 and '\0' not in config[name]
                 for name in set(config) - {'version'}))
     binary = file(config['opencode'], config['opencodeSha256'], True)
@@ -101,10 +104,12 @@ def validate(config, workspace):
     authorities = (binary, node, report_path, ipc, ROOT) + ((cooperative,) if cooperative else ())
     require(all(not item.is_relative_to(project) for item in authorities)
             and not project.is_relative_to(ROOT) and not project.is_relative_to(report_path.parent))
-    return binary, node, ipc, project, home, cooperative
+    values = binary, node, ipc, project, home, cooperative
+    return values + (OUTPUT_CONSTRAINT,) if 'outputConstraint' in config else values
 
 
-def command(binary, node, ipc, project, home, cooperative=None):
+def command(binary, node, ipc, project, home, cooperative=None, output_constraint=None):
+    require(output_constraint is None or output_constraint == OUTPUT_CONSTRAINT)
     result = ['/usr/bin/bwrap', '--die-with-parent', '--new-session', '--unshare-user',
         '--uid', str(os.getuid()), '--gid', str(os.getgid()), '--unshare-net', '--unshare-pid',
         '--unshare-ipc', '--unshare-uts', '--cap-drop', 'ALL', '--ro-bind', '/usr', '/usr',
@@ -127,11 +132,12 @@ def command(binary, node, ipc, project, home, cooperative=None):
         result += ['--ro-bind', str(ROOT / 'scripts' / name), '/opt/scripts/' + name]
     return result + ['--chdir', '/workspace', '--clearenv', '--setenv', 'PATH', '/usr/bin:/bin',
         '--setenv', 'LANG', 'C.UTF-8', '--', '/usr/bin/python3', '-B', '/opt/scripts/opencode_session.py',
-        '--inside', os.readlink('/proc/self/ns/net')]
+        '--inside', os.readlink('/proc/self/ns/net')] + ([OUTPUT_CONSTRAINT] if output_constraint is not None else [])
 
 
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == '--inside':
+    if len(sys.argv) in (3, 4) and sys.argv[1] == '--inside':
+        require(len(sys.argv) == 3 or sys.argv[3] == OUTPUT_CONSTRAINT)
         require(os.getuid() != 0 and os.readlink('/proc/self/ns/net') != sys.argv[2]
                 and {name for _, name in socket.if_nameindex()} <= {'lo'})
         require(set(os.environ) <= {'PATH', 'LANG', 'LC_CTYPE', 'PWD'}
@@ -140,7 +146,8 @@ def main():
         caps = next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines()
                     if line.startswith('CapEff:'))
         require(int(caps, 16) == 0)
-        os.execve('/opt/node', ['/opt/node', '/opt/scripts/opencode_session.cjs'],
+        selected = ['--output-constraint', OUTPUT_CONSTRAINT] if len(sys.argv) == 4 else []
+        os.execve('/opt/node', ['/opt/node', '/opt/scripts/opencode_session.cjs', *selected],
                   {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
     require(len(sys.argv) == 4 and sys.argv[1] == '--execute' and len(sys.argv[2]) <= 32768)
     values = validate(json.loads(sys.argv[2], object_pairs_hook=no_duplicates), sys.argv[3])
