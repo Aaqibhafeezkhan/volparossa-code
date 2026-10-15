@@ -80,9 +80,19 @@ execution on other peers.
 76 targeted Node contract tests and ten inert Python session-selection tests
 pass. They cover actual HTTP/Unix framing with synthetic core replies, legacy
 compatibility, result binding, namespace command selection and startup refusal.
-No model or OpenCode binary ran in those tests. Core native compilation and a
-new pinned real OpenCode edit/test trial remain required; the earlier invalid
-JSON trial is not considered fixed by these protocol checks.
+No model or OpenCode binary ran in those tests. The core's source-only normal
+build now passes all five native check targets; ABI, loader, BF16/F32 and
+output-constraint checks also pass under ASan/UBSan. The wider upstream tensor
+test still fails on its previously recorded Q1_0/Q8_0 alignment error. See
+[the original source-only run](https://github.com/VOLPAROSSA/volparossa/actions/runs/38671551374).
+The earlier invalid JSON trial is not considered fixed by these contract checks.
+
+The next native trial is pinned to core
+`9d044921f7e684737f9b10868429de42bc5416c9`, with matching build v3/backend v2
+provenance and an explicit selector passed into the actual OpenCode runtime.
+The native guest and outer verifier require task receipt v2 with that selector;
+legacy Torch arguments and task receipt v1 remain unchanged. Source checks still
+gate the next real edit/test trial; no new model run has been dispatched.
 
 - `qwen3-0.6b-v1`: the unchanged default; native template
   `qwen3-tools-nonthinking-v1`, model context 32,768 tokens.

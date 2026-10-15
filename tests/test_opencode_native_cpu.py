@@ -37,7 +37,7 @@ KIND = 'llama_cpp_bf16_v1'
 
 class Contracts(unittest.TestCase):
     def test_native_is_refused_without_final_pin_and_cannot_replace_default(self):
-        self.assertEqual(TRIAL.NATIVE_CORE, '9e9086ee873f7162f498e8647e6f6f438273e6ce')
+        self.assertEqual(TRIAL.NATIVE_CORE, '9d044921f7e684737f9b10868429de42bc5416c9')
         original = TRIAL.trial_profile(TRIAL.LARGE_MODEL)
         self.assertNotIn('inference_backend', original)
         with patch.object(TRIAL, 'NATIVE_CORE', None), self.assertRaisesRegex(ValueError, 'native_core_not_pinned'):
@@ -249,10 +249,11 @@ sudo() { return 99; }
                      "if report['units_empty'] and report['provision_group_joined']:"):
             self.assertIn(text, source)
         task_driver = (ROOT / 'scripts/smoke_opencode_inference.cjs').read_bytes()
-        # Exact unchanged source at dd7a709, usable also in a shallow checkout;
-        # not regenerated tests, injected answers or a claim of model quality.
+        # Exact source with opt-in output selection, usable in a shallow checkout.
+        # Focused JS tests retain the original prompt, approvals and round bounds;
+        # no regenerated answers or claim of model quality.
         self.assertEqual(hashlib.sha256(task_driver).hexdigest(),
-                         '702f0122475ca2e7da6b3f98b446071dcd3baf06af097168cffaa43631f1e484')
+                         '92ca6da4a1cff07f07fd9e56afe28f853c2868f7d111c6cdc5350145bb54cba0')
 
     def test_native_memory_requires_actual_zero_swap_and_oom_not_just_limits(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(TRIAL, 'cgroup', return_value=Path(temp)):
@@ -690,7 +691,7 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
                 TRIAL.run_native_build(11 * TRIAL.GIB, {})
             self.assertEqual(start.call_count, 1)
 
-    def bundle_fixture(self, directory):
+    def bundle_fixture(self, directory, constrained=False):
         base, core = Path(directory) / 'base', Path(directory) / 'core'
         build_root, backend = base / 'llama-build', base / 'ml/native-backend'
         wrappers = core / 'workers/volparossa-ml/native-cpu'
@@ -702,18 +703,22 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
         library = artifact(build_root / 'libvolparossa_llama_cpu.so', b'inert library bytes, never loaded')
         (backend / 'libvolparossa_llama_cpu.so').write_bytes((build_root / 'libvolparossa_llama_cpu.so').read_bytes())
         wrapper = {name: artifact(wrappers / name, b'inert source ' + name.encode())
-                   for name in ('CMakeLists.txt', 'adapter.h', 'adapter.cpp', 'bounded-tensor-validation.patch')}
-        raw_build = dict(version=2, kind=KIND, source_commit=NATIVE.SOURCE, source_tree='b' * 40,
+                   for name in (NATIVE.CONSTRAINED_WRAPPERS if constrained else NATIVE.LEGACY_WRAPPERS)}
+        raw_build = dict(version=3 if constrained else 2, kind=KIND, source_commit=NATIVE.SOURCE, source_tree='b' * 40,
                          abi_version=1, jobs=2, cpu='avx2_fma_f16c', models_loaded=False, downloads=False,
                          install=False, sanitizers=False, provisionable=True, quantization=False,
                          library={'path': 'libvolparossa_llama_cpu.so', **library}, wrapper_sources=wrapper,
                          dynamic_dependencies=['libc.so.6'])
+        if constrained:
+            raw_build['output_constraints'] = [NATIVE.OUTPUT_CONSTRAINT]
         for root in (build_root, backend):
             (root / 'build.json').write_text(json.dumps(raw_build))
         build_hash = hashlib.sha256((build_root / 'build.json').read_bytes()).hexdigest()
         gguf = artifact(backend / 'model.gguf', b'inert gguf bytes, never loaded')
-        manifest = dict(model_profile=NATIVE.MODEL, build_manifest_sha256=build_hash,
+        manifest = dict(version=2 if constrained else 1, model_profile=NATIVE.MODEL, build_manifest_sha256=build_hash,
                         library=raw_build['library'], gguf={'path': 'model.gguf', **gguf}, source_weights_sha256='c' * 64)
+        if constrained:
+            manifest['output_constraints'] = [NATIVE.OUTPUT_CONSTRAINT]
         (backend / 'backend.json').write_text(json.dumps(manifest))
         report = dict(native_cpu_converter={'implementation': KIND, 'dependencies': {'sentencepiece': '0.2.1'}},
                       native_backend={'kind': KIND, 'root': str(backend),
@@ -741,6 +746,8 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
             with patch.object(NATIVE, 'module', return_value=parser):
                 result = NATIVE.validate_provision(core, base, report, build)
                 self.assertEqual(result['manifest_sha256'], report['native_backend']['backend_sha256'])
+                self.assertEqual(set(result), {'kind', 'source_commit', 'manifest_sha256', 'build_manifest_sha256',
+                                              'library_sha256', 'gguf_sha256', 'gguf_bytes', 'source_weights_sha256'})
                 self.assertNotIn(str(base), json.dumps(result))
                 for mutation in ({'native_cpu_converter': {}},
                                  {'native_backend': dict(report['native_backend'], root='/untrusted')},
@@ -753,6 +760,73 @@ value.await_release(Path(sys.argv[2]), {'build_manifest_sha256': 'a' * 64},
             (core / 'workers/volparossa-ml/native-cpu/adapter.cpp').write_bytes(b'changed')
             with patch.object(NATIVE, 'module', return_value=builder), self.assertRaisesRegex(ValueError, 'native_wrapper_binding'):
                 NATIVE.validate_build(core, base)
+
+    def test_constrained_build3_backend2_preserve_closed_provenance_and_require_capability(self):
+        for selected in (False, True):
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as temp:
+                base, core, report, builder, parser = self.bundle_fixture(temp, constrained=selected)
+                with patch.object(NATIVE, 'module', return_value=builder):
+                    build = NATIVE.validate_build(core, base)
+                with patch.object(NATIVE, 'module', return_value=parser):
+                    backend = NATIVE.validate_provision(core, base, report, build)
+                if selected:
+                    NATIVE.require_output_constraint(build, backend)
+                    self.assertEqual(build['build_version'], 3)
+                    self.assertEqual(backend['build_version'], 3)
+                    self.assertEqual(backend['backend_version'], 2)
+                    self.assertEqual(build['output_constraints'], [NATIVE.OUTPUT_CONSTRAINT])
+                    self.assertEqual(backend['output_constraints'], [NATIVE.OUTPUT_CONSTRAINT])
+                    self.assertEqual(set(build['wrapper_sources']), set(NATIVE.CONSTRAINED_WRAPPERS))
+                else:
+                    with self.assertRaisesRegex(ValueError, 'native_output_constraint_required'):
+                        NATIVE.require_output_constraint(build, backend)
+                    self.assertNotIn('build_version', build)
+                    self.assertNotIn('output_constraints', build)
+                    self.assertNotIn('backend_version', backend)
+                    self.assertEqual(set(build['wrapper_sources']), set(NATIVE.LEGACY_WRAPPERS))
+                self.assertFalse(build['models_loaded'])
+                self.assertNotIn('passed', backend)
+                self.assertNotIn(str(base), json.dumps(backend))
+
+    def test_constrained_build_cannot_omit_substitute_or_downgrade_wrapper_capability(self):
+        changes = ({'version': True}, {'version': 4}, {'version': 2}, {'output_constraints': None},
+                   {'output_constraints': []}, {'output_constraints': ['unknown']},
+                   {'output_constraints': [NATIVE.OUTPUT_CONSTRAINT, NATIVE.OUTPUT_CONSTRAINT]})
+        for changed in changes:
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temp:
+                base, core, _, builder, _ = self.bundle_fixture(temp, constrained=True)
+                file = base / 'llama-build/build.json'
+                value = json.loads(file.read_text()) | changed
+                file.write_text(json.dumps(value))
+                with patch.object(NATIVE, 'module', return_value=builder), self.assertRaises(ValueError):
+                    NATIVE.validate_build(core, base)
+        for name in ('output-constraint.h', 'output-constraint.cpp'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                base, core, _, builder, _ = self.bundle_fixture(temp, constrained=True)
+                (core / 'workers/volparossa-ml/native-cpu' / name).write_bytes(b'changed source')
+                with patch.object(NATIVE, 'module', return_value=builder), \
+                        self.assertRaisesRegex(ValueError, 'native_wrapper_binding'):
+                    NATIVE.validate_build(core, base)
+
+    def test_constrained_manifest_and_current_trial_reject_missing_or_mixed_capability(self):
+        for changes in ({'version': True}, {'version': 1}, {'version': 3}, {'output_constraints': None},
+                        {'output_constraints': []}, {'output_constraints': ['unknown']}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temp:
+                base, core, report, builder, parser = self.bundle_fixture(temp, constrained=True)
+                with patch.object(NATIVE, 'module', return_value=builder):
+                    build = NATIVE.validate_build(core, base)
+                file = base / 'ml/native-backend/backend.json'
+                file.write_text(json.dumps(json.loads(file.read_text()) | changes))
+                report['native_backend']['backend_sha256'] = hashlib.sha256(file.read_bytes()).hexdigest()
+                with patch.object(NATIVE, 'module', return_value=parser), self.assertRaises(ValueError):
+                    NATIVE.validate_provision(core, base, report, build)
+        build = {'build_version': 3, 'output_constraints': [NATIVE.OUTPUT_CONSTRAINT]}
+        backend = build | {'backend_version': 2}
+        for old_build, old_backend in (({}, backend), (build, {}), (build | {'output_constraints': []}, backend),
+                (build, backend | {'backend_version': 1}), (build, backend | {'output_constraints': None})):
+            with self.subTest(build=old_build, backend=old_backend), \
+                    self.assertRaisesRegex(ValueError, 'native_output_constraint_required'):
+                NATIVE.require_output_constraint(old_build, old_backend)
 
     def test_core_provenance_and_loader_rejections_are_not_swallowed(self):
         with tempfile.TemporaryDirectory() as temp:

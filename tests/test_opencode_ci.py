@@ -144,6 +144,13 @@ class Contracts(unittest.TestCase):
              "trial_profile(getattr(args, 'model_profile', MODEL))"),
             ("staged_inputs(profile['model_profile'], backend)", "staged_inputs(profile['model_profile'])"),
             ("    report.update(backend_fields(profile))\n", ''),
+            ("task_arguments(backend)",
+             "[str(INPUT / 'runtime/node'), str(INPUT / 'code/scripts/smoke_opencode_inference.cjs'),\n"
+             "            '--execute', '--yes', '--node', str(INPUT / 'runtime/node'), '--build-report',\n"
+             "            str(INPUT / 'runtime/build-report.json'), '--socket', str(BASE / 'private.sock'),\n"
+             "            '--project-parent', str(PROJECTS), '--output', str(BASE / 'task.json')]"),
+            ("validate_task_selection(report['task'], profile, backend)",
+             "require(report['task']['model_profile'] == profile['model_profile'], 'task_model_mismatch')"),
             ("        provision_pins = (model.load_pins(profile['model_profile'], native_cpu_converter=True)\n"
              "                          if backend != 'torch' else model.load_pins(profile['model_profile']))\n",
              "        provision_pins = model.load_pins(profile['model_profile'])\n"),

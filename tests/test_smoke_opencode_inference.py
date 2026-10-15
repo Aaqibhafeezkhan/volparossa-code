@@ -19,6 +19,46 @@ SPEC.loader.exec_module(TRIAL)
 
 
 class Contracts(unittest.TestCase):
+    def test_task_arguments_preserve_torch_and_only_append_native_selection(self):
+        legacy = [str(TRIAL.INPUT / 'runtime/node'), str(TRIAL.INPUT / 'code/scripts/smoke_opencode_inference.cjs'),
+                  '--execute', '--yes', '--node', str(TRIAL.INPUT / 'runtime/node'), '--build-report',
+                  str(TRIAL.INPUT / 'runtime/build-report.json'), '--socket', str(TRIAL.BASE / 'private.sock'),
+                  '--project-parent', str(TRIAL.PROJECTS), '--output', str(TRIAL.BASE / 'task.json')]
+        self.assertEqual(TRIAL.task_arguments(), legacy)
+        self.assertEqual(TRIAL.task_arguments('torch'), legacy)
+        self.assertEqual(TRIAL.task_arguments('llama_cpp_bf16_v1'),
+                         legacy + ['--output-constraint', 'qwen_tagged_tool_json_v1'])
+        for backend in (None, 'unknown'):
+            with self.assertRaisesRegex(ValueError, 'unknown_inference_backend'):
+                TRIAL.task_arguments(backend)
+        guest = inspect.getsource(TRIAL.guest)
+        self.assertIn('start(TASK_UNIT, task_arguments(backend), 768 * 1024**2, 2550)', guest)
+        self.assertIn("native.require_output_constraint(report['native_build'], report['native_backend'])", guest)
+        host = inspect.getsource(TRIAL.execute)
+        self.assertIn("if backend != 'torch' and result.get('passed') is True:\n"
+                      "            validate_task_selection(result.get('task', {}), profile, backend)", host)
+        self.assertLess(host.index("validate_task_selection(result.get('task', {})"),
+                        host.index("receipt['actual_model_execution_proven'] = bool"))
+
+    def test_task_receipt_selection_binds_exact_version_without_relabeling_legacy(self):
+        legacy = {'version': 1, 'model_profile': TRIAL.LARGE_MODEL, 'passed': False}
+        selected = legacy | {'version': 2, 'output_constraint': TRIAL.OUTPUT_CONSTRAINT}
+        profile = TRIAL.trial_profile(TRIAL.LARGE_MODEL)
+        TRIAL.validate_task_selection(legacy, profile)
+        TRIAL.validate_task_selection(selected, profile, 'llama_cpp_bf16_v1')
+        self.assertEqual(legacy, {'version': 1, 'model_profile': TRIAL.LARGE_MODEL, 'passed': False})
+        self.assertFalse(selected['passed'])
+        for task, backend in ((legacy, 'llama_cpp_bf16_v1'), (selected, 'torch'),
+                (selected | {'output_constraint': None}, 'llama_cpp_bf16_v1'),
+                (selected | {'output_constraint': 'other'}, 'llama_cpp_bf16_v1'),
+                (legacy | {'version': True}, 'torch'),
+                (legacy | {'output_constraint': None}, 'torch')):
+            with self.subTest(task=task, backend=backend), \
+                    self.assertRaisesRegex(ValueError, 'task_output_constraint_mismatch'):
+                TRIAL.validate_task_selection(task, profile, backend)
+        with self.assertRaisesRegex(ValueError, 'task_model_mismatch'):
+            TRIAL.validate_task_selection(selected | {'model_profile': TRIAL.MODEL}, profile, 'llama_cpp_bf16_v1')
+
     def archive(self, root, name='code/example.cjs', *, payload=b'synthetic source\n', sha=None, link=False,
                 model_profile=TRIAL.MODEL, core_revision=None):
         manifest = dict(core_revision=core_revision or TRIAL.trial_profile(model_profile)['core_revision'], model_profile=model_profile,

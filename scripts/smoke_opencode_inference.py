@@ -35,9 +35,10 @@ LARGE_MODEL = 'qwen3-4b-instruct-2507-v1'
 LARGE_CORE = '6a517b576baa17e7329661ee0476d1848081d114'
 MODEL_PROFILES = (MODEL, LARGE_MODEL)
 INFERENCE_BACKENDS = ('torch', 'llama_cpp_bf16_v1')
-# Native complete tensor validation is bounded and source-provenance checked.
-NATIVE_CORE = '9e9086ee873f7162f498e8647e6f6f438273e6ce'
+# Native complete tensor validation and opt-in output constraints are source-bound.
+NATIVE_CORE = '9d044921f7e684737f9b10868429de42bc5416c9'
 NATIVE_SOURCE = '7fe450e19305b828c199d602c23a8337aaa1f03b'
+OUTPUT_CONSTRAINT = 'qwen_tagged_tool_json_v1'
 ENV = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'}
 IMAGE_NAME = 'debian-13-genericcloud-amd64-20260826-2582.qcow2'
 IMAGE_SHA512 = '184761b0dad0f9ace02f9298050ca96ce3caa39a461a47706d47ff9698b59933918b91b40177fbd4d392f6446af8b4d18ecb94caca988169b19641606bf34003'
@@ -85,6 +86,23 @@ def validate_backend_fields(value, profile):
     expected = backend_fields(profile)
     require({key: value[key] for key in ('inference_backend', 'native_source_commit') if key in value}
             == expected, 'input_backend')
+
+
+def task_arguments(inference_backend='torch'):
+    require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    return [str(INPUT / 'runtime/node'), str(INPUT / 'code/scripts/smoke_opencode_inference.cjs'),
+            '--execute', '--yes', '--node', str(INPUT / 'runtime/node'), '--build-report',
+            str(INPUT / 'runtime/build-report.json'), '--socket', str(BASE / 'private.sock'),
+            '--project-parent', str(PROJECTS), '--output', str(BASE / 'task.json'),
+            *(['--output-constraint', OUTPUT_CONSTRAINT] if inference_backend != 'torch' else [])]
+
+
+def validate_task_selection(task, profile, inference_backend='torch'):
+    require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    require(task['model_profile'] == profile['model_profile'], 'task_model_mismatch')
+    require(type(task.get('version')) is int and task['version'] == (1 if inference_backend == 'torch' else 2)
+            and (task.get('output_constraint') == OUTPUT_CONSTRAINT if inference_backend != 'torch'
+                 else 'output_constraint' not in task), 'task_output_constraint_mismatch')
 
 
 def digest(path, algorithm='sha256'):
@@ -594,6 +612,7 @@ def guest(args):
         if backend != 'torch':
             native = module(INPUT / 'code/scripts/opencode_native_cpu.py', 'opencode_native_provision')
             report['native_backend'] = native.validate_provision(SOURCE, BASE, observed, report['native_build'])
+            native.require_output_constraint(report['native_build'], report['native_backend'])
         provision_stage = 'complete'
         report['phase'] = 'core-start'
         (BASE / 'work').mkdir(mode=0o700)
@@ -612,10 +631,7 @@ def guest(args):
         require(int(state['MainPID']) > 0, 'core_process')
         report['phase'] = 'opencode-task'
         created.append(TASK_UNIT)
-        start(TASK_UNIT, [str(INPUT / 'runtime/node'), str(INPUT / 'code/scripts/smoke_opencode_inference.cjs'),
-            '--execute', '--yes', '--node', str(INPUT / 'runtime/node'), '--build-report',
-            str(INPUT / 'runtime/build-report.json'), '--socket', str(BASE / 'private.sock'),
-            '--project-parent', str(PROJECTS), '--output', str(BASE / 'task.json')], 768 * 1024**2, 2550)
+        start(TASK_UNIT, task_arguments(backend), 768 * 1024**2, 2550)
         deadline = time.monotonic() + 2565
         while time.monotonic() < deadline:
             state = properties(TASK_UNIT)
@@ -627,7 +643,7 @@ def guest(args):
         report['task_exit_status'] = int(state.get('ExecMainStatus', '-1'))
         if (BASE / 'task.json').exists():
             report['task'] = load(BASE / 'task.json', 32768)
-            require(report['task']['model_profile'] == profile['model_profile'], 'task_model_mismatch')
+            validate_task_selection(report['task'], profile, backend)
         for name, field in ((CORE_UNIT, 'core_memory'), (TASK_UNIT, 'task_memory')):
             report[field] = memory(name)
             require(report[field]['swap'] == report[field]['oom_kill'] == 0, 'resource_violation')
@@ -981,6 +997,8 @@ def execute(args):
         validate_backend_fields(result, profile)
         require(result.get('core_revision') == profile['core_revision']
                 and result.get('model_profile') == profile['model_profile'], 'guest_source_profile')
+        if backend != 'torch' and result.get('passed') is True:
+            validate_task_selection(result.get('task', {}), profile, backend)
         receipt['actual_model_execution_proven'] = bool(result.get('passed') and result.get('actual_model_provisioned'))
         require(executed.returncode == 0 and result.get('passed') is True, 'guest_trial_failed')
         receipt['phase'], status = 'complete', 0
