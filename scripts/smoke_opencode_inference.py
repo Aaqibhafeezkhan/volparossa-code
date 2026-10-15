@@ -36,7 +36,7 @@ LARGE_CORE = '6a517b576baa17e7329661ee0476d1848081d114'
 MODEL_PROFILES = (MODEL, LARGE_MODEL)
 INFERENCE_BACKENDS = ('torch', 'llama_cpp_bf16_v1')
 # Native validation, output constraints and closed task diagnostics are source-bound.
-NATIVE_CORE = '3630ff7905f401f26245f2e6cf4f0f01d7950549'
+NATIVE_CORE = '0091e75f49552ab5c5a0934cab6ae08463c45b17'
 NATIVE_SOURCE = '7fe450e19305b828c199d602c23a8337aaa1f03b'
 OUTPUT_CONSTRAINT = 'qwen_tagged_tool_json_v1'
 ENV = {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'}
@@ -126,6 +126,13 @@ def load(path, maximum=2 * 1024**2):
     info = path.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_size <= maximum, 'report_bound')
     return json.loads(path.read_bytes())
+
+
+def guest_receipt_limit(inference_backend='torch'):
+    require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    # The optional native diagnostic fits the existing public-export ceiling.
+    # This changes no task input, model, execution or resource allowance.
+    return 65536 if inference_backend == 'torch' else 256 * 1024
 
 
 def closed_conversion(lines, log_state, process_status):
@@ -647,7 +654,8 @@ def guest(args):
         for name, field in ((CORE_UNIT, 'core_memory'), (TASK_UNIT, 'task_memory')):
             report[field] = memory(name)
             require(report[field]['swap'] == report[field]['oom_kill'] == 0, 'resource_violation')
-        report['core_diagnostics'] = private.service_diagnostic(BASE / (CORE_UNIT + '.log'))
+        report['core_diagnostics'] = private.service_diagnostic(
+            BASE / (CORE_UNIT + '.log'), **({'memory_enabled': True} if backend != 'torch' else {}))
         require(report['task_exit_status'] == 0 and report.get('task', {}).get('passed') is True, 'task_failed')
         require(empty(TASK_UNIT) and not list((BASE / 'work').iterdir()), 'task_private_cleanup')
         require(staged_inputs(profile['model_profile'], backend) == manifest, 'staged_inputs_changed')
@@ -685,7 +693,8 @@ def guest(args):
             unit(name, 'stop', check=False)
         if (BASE / (CORE_UNIT + '.log')).exists():
             try:
-                report['core_diagnostics'] = private.service_diagnostic(BASE / (CORE_UNIT + '.log'))
+                report['core_diagnostics'] = private.service_diagnostic(
+                    BASE / (CORE_UNIT + '.log'), **({'memory_enabled': True} if backend != 'torch' else {}))
             except (OSError, ValueError, KeyError):
                 report['failure'] = 'closed_diagnostic_failed'
         report['units_empty'] = all(empty(name) for name in created)
@@ -993,7 +1002,7 @@ def execute(args):
                        '--inference-backend', backend, timeout=6600, check=False)
         receipt['guest_exit_status'] = executed.returncode
         scp('vpci@127.0.0.1:/home/vpci/opencode-result.json', args.output / 'guest-result.json')
-        result = load(args.output / 'guest-result.json', 65536)
+        result = load(args.output / 'guest-result.json', guest_receipt_limit(backend))
         validate_backend_fields(result, profile)
         require(result.get('core_revision') == profile['core_revision']
                 and result.get('model_profile') == profile['model_profile'], 'guest_source_profile')

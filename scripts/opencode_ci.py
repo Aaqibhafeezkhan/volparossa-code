@@ -237,6 +237,10 @@ def export():
                     and not info.st_mode & 0o077 and info.st_size <= 256 * 1024, 'closed_receipt_file')
             value = json.loads(source.read_bytes())
             require(type(value) is dict, 'closed_receipt_object')
+            # Pretty-printing must not expand a bounded input beyond the same
+            # public-receipt ceiling. No raw logs or additional paths are added.
+            encoded = json.dumps(value, sort_keys=True, indent=2, allow_nan=False).encode() + b'\n'
+            require(len(encoded) <= 256 * 1024, 'closed_receipt_file')
             record(output / name, value)
 
 

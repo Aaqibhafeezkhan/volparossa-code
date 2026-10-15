@@ -26,6 +26,51 @@ CI = load('opencode_ci')
 TRIAL = load('smoke_opencode_inference')
 
 
+def specialize_memory_diagnostics(source):
+    """Normalize only the two exact reviewed native opt-ins, never the golden."""
+    keyword = ", **({'memory_enabled': True} if backend != 'torch' else {})"
+    expected = ast.parse("private.service_diagnostic(BASE / (CORE_UNIT + '.log')" + keyword + ')',
+                         mode='eval').body
+    calls = [node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and node.func.attr == 'service_diagnostic']
+    if source.count(keyword) != 2 or len(calls) != 2 or any(
+            ast.dump(call) != ast.dump(expected) for call in calls):
+        raise ValueError('memory_diagnostic_specialization')
+    return source.replace(keyword, '')
+
+
+def bounded_memory_receipt():
+    """Maximum-count synthetic closed records, not observed model/runtime facts."""
+    maximum = 2**53 - 1
+    stat = dict(state='observed', **{key: maximum for key in (
+        'anon_bytes', 'file_bytes', 'shmem_bytes', 'inactive_file_bytes', 'active_file_bytes', 'kernel_bytes')})
+    sample = dict(headroom_bytes=1, host_available_bytes=maximum,
+        self_headroom_bytes=1, ancestor_headroom_bytes=2, self_max_bytes=maximum,
+        self_current_bytes=maximum-1, ancestor_max_bytes=maximum, ancestor_current_bytes=maximum-2,
+        limiting_scope='self', missing_stage='none', io_kind='none', numeric_overflow=False,
+        self_stat=stat, ancestor_stat=stat)
+    memory = dict(version=1, phase='cache_hint', binding='bound', outcome='advised',
+        supervisor_ok=True, before=sample, after=sample, syscall_error=None)
+    state = dict(version=1, last_phase='checkpoint',
+        substage=dict(stage='verify_after', state='complete', elapsed_ms=599999),
+        capacity=dict(decision='cancel', constraint='quiet_hold', cpu_some_avg10=99.99999999999999,
+            io_some_avg10=99.99999999999999, memory_bytes=2**64-1),
+        controls=dict(issued=128, acknowledged=128, last_issued='resume', last_acknowledged='resume'),
+        peak_rss_bytes=10 * 1024**3,
+        generation=dict(prompt_tokens=12288, threads=2, interop_threads=2,
+            cpu=dict(isa='NO AVX', avx2=False, avx512_bf16=False, amx_bf16=False,
+                amx_tile=False, mkldnn_available=False, mkldnn_enabled=False),
+            first_forward_started_ms=599997, first_forward_completed_ms=599998,
+            first_token_ms=599999, generated_tokens=1024, complete=True, elapsed_ms=599999))
+    event = dict(version=1, phase='task', detail=dict(code='compute_private_process_cleanup_deadline',
+        io_kind='permission_denied', exit_code=255, signal=64, stderr_class='user_namespace'))
+    return dict(version=1, kind='opencode-real-inference-guest', passed=False,
+        core_revision=TRIAL.NATIVE_CORE, model_profile=TRIAL.LARGE_MODEL, inference_backend='llama_cpp_bf16_v1',
+        native_source_commit=TRIAL.NATIVE_SOURCE, actual_model_provisioned=False,
+        core_diagnostics=dict(version=2, events=[event] * 16, states=[state] * 16,
+            memory=[memory] * 16, truncated=False, unrecognized_record=False))
+
+
 class Contracts(unittest.TestCase):
     def test_host_profile_is_explicit_and_refused_on_local_host(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(CI, 'run') as process:
@@ -121,6 +166,48 @@ class Contracts(unittest.TestCase):
             self.assertEqual({p.name for p in result.iterdir()}, {'ci-source.json', 'vm-result.json'})
             self.assertNotIn('sentinel', ''.join(p.read_text() for p in result.iterdir()))
 
+    def test_large_closed_memory_receipt_reaches_existing_export_without_widening_torch(self):
+        value = bounded_memory_receipt()
+        diagnostic = value['core_diagnostics']
+        raw_log_bytes = sum(len(marker) + len(json.dumps(row, separators=(',', ':'))) + 1
+            for marker, rows in (('private_memory_diagnostic ', diagnostic['memory']),
+                ('private_execution_state ', diagnostic['states']),
+                ('private_execution_diagnostic ', diagnostic['events'])) for row in rows)
+        self.assertLess(raw_log_bytes, 65536)
+        self.assertLess(len(json.dumps(diagnostic['memory'][0], separators=(',', ':')))
+                        + len('private_memory_diagnostic ') + 1, 4096)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(CI, 'BUILD', Path(tmp)), patch.object(CI, 'guard'):
+            root = Path(tmp)
+            (root / 'ci-vm').mkdir()
+            source = root / 'ci-vm/guest-result.json'
+            TRIAL.record(source, value)
+            self.assertGreater(source.stat().st_size, 65536)
+            self.assertLessEqual(source.stat().st_size, 256 * 1024)
+            result = TRIAL.load(source, TRIAL.guest_receipt_limit('llama_cpp_bf16_v1'))
+            self.assertEqual(result, value)
+            self.assertFalse(result['passed'])
+            TRIAL.validate_backend_fields(result, TRIAL.trial_profile(TRIAL.LARGE_MODEL, 'llama_cpp_bf16_v1'))
+            with self.assertRaisesRegex(ValueError, 'report_bound'):
+                TRIAL.load(source, TRIAL.guest_receipt_limit('torch'))
+            CI.export()
+            exported = root / 'ci-public-receipts/guest-result.json'
+            self.assertEqual(json.loads(exported.read_bytes()), value)
+            self.assertLessEqual(exported.stat().st_size, 256 * 1024)
+
+    def test_export_ceiling_also_bounds_pretty_print_expansion(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(CI, 'BUILD', Path(tmp)), patch.object(CI, 'guard'):
+            root = Path(tmp)
+            (root / 'ci-vm').mkdir()
+            source = root / 'ci-vm/guest-result.json'
+            value = {'synthetic_counters': [0] * 60000}
+            source.write_text(json.dumps(value, separators=(',', ':')))
+            source.chmod(0o600)
+            self.assertLess(source.stat().st_size, 256 * 1024)
+            self.assertGreater(len(json.dumps(value, sort_keys=True, indent=2).encode()) + 1, 256 * 1024)
+            with self.assertRaisesRegex(ValueError, 'closed_receipt_file'):
+                CI.export()
+            self.assertFalse((root / 'ci-public-receipts/guest-result.json').exists())
+
     def test_default_guest_keeps_reviewed_task_and_acceptance_with_closed_diagnostics(self):
         # Resolve only explicit profile substitutions and closed diagnostics.
         # Every other guest statement must still be
@@ -138,6 +225,7 @@ class Contracts(unittest.TestCase):
             lines = source.splitlines(keepends=True)
             del lines[child.lineno - node.lineno:child.end_lineno - node.lineno + 1]
             source = ''.join(lines)
+        source = specialize_memory_diagnostics(source)
         changes = (
             ("    backend = getattr(args, 'inference_backend', 'torch')\n", ''),
             ("trial_profile(getattr(args, 'model_profile', MODEL), backend)",
@@ -210,6 +298,20 @@ class Contracts(unittest.TestCase):
         encoded = json.dumps(stable(ast.parse(source).body[0]), sort_keys=True, separators=(',', ':')).encode()
         self.assertEqual(hashlib.sha256(encoded).hexdigest(),
                          '5321af83db1d961df90ecdbea73235da224117de85e32cd13143cb9436c6c637')
+
+    def test_torch_specialization_rejects_changed_memory_opt_in_expressions(self):
+        current = (ROOT / 'scripts/smoke_opencode_inference.py').read_text()
+        node = next(node for node in ast.parse(current).body
+                    if isinstance(node, ast.FunctionDef) and node.name == 'guest')
+        source = ast.get_source_segment(current, node)
+        self.assertNotIn('memory_enabled', specialize_memory_diagnostics(source))
+        for old, new in (("'memory_enabled': True", "'memory_enabled': False"),
+                         ("'memory_enabled': True", "'memory_enabled': 1"),
+                         ("if backend != 'torch' else {}", "if backend == 'torch' else {}"),
+                         ("if backend != 'torch' else {}", "if backend != 'torch' else {'memory_enabled': False}"),
+                         ("CORE_UNIT + '.log'", "TASK_UNIT + '.log'")):
+            with self.subTest(new=new), self.assertRaisesRegex(ValueError, 'memory_diagnostic_specialization'):
+                specialize_memory_diagnostics(source.replace(old, new, 1))
 
     def test_workflow_has_one_manual_trial_and_closed_export_only(self):
         source = (ROOT / '.github/workflows/opencode-inference.yml').read_text()

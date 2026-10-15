@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Small pure input/resource contracts, not a model, VM or runtime proof."""
+import ast
 import hashlib
 import importlib.util
 import io
@@ -10,7 +11,7 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/smoke_opencode_inference.py'
 SPEC = importlib.util.spec_from_file_location('opencode_inference_trial', SCRIPT)
@@ -19,16 +20,56 @@ SPEC.loader.exec_module(TRIAL)
 
 
 class Contracts(unittest.TestCase):
+    def test_native_guest_receipt_limit_is_bounded_without_widening_torch(self):
+        self.assertEqual(TRIAL.guest_receipt_limit(), 65536)
+        self.assertEqual(TRIAL.guest_receipt_limit('torch'), 65536)
+        self.assertEqual(TRIAL.guest_receipt_limit('llama_cpp_bf16_v1'), 256 * 1024)
+        for backend in (None, '', 'llama_cpp', 'other'):
+            with self.assertRaisesRegex(ValueError, 'unknown_inference_backend'):
+                TRIAL.guest_receipt_limit(backend)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'receipt.json'
+            # Padding is inert JSON whitespace, not a private payload or model.
+            path.write_bytes(b'{}' + b' ' * (256 * 1024 - 2))
+            self.assertEqual(TRIAL.load(path, TRIAL.guest_receipt_limit('llama_cpp_bf16_v1')), {})
+            with self.assertRaisesRegex(ValueError, 'report_bound'):
+                TRIAL.load(path, TRIAL.guest_receipt_limit('torch'))
+            path.write_bytes(path.read_bytes() + b' ')
+            with self.assertRaisesRegex(ValueError, 'report_bound'):
+                TRIAL.load(path, TRIAL.guest_receipt_limit('llama_cpp_bf16_v1'))
+        host = inspect.getsource(TRIAL.execute)
+        self.assertIn("load(args.output / 'guest-result.json', guest_receipt_limit(backend))", host)
+        self.assertIn('validate_backend_fields(result, profile)', host)
+        self.assertIn("require(executed.returncode == 0 and result.get('passed') is True, 'guest_trial_failed')", host)
+
     def test_core_diagnostics_use_pinned_closed_collector_without_changing_task_authority(self):
         guest = inspect.getsource(TRIAL.guest)
         self.assertIn("private = module(SOURCE / 'tests/integration/agent-private-conversation.py'", guest)
-        self.assertEqual(guest.count("private.service_diagnostic(BASE / (CORE_UNIT + '.log'))"), 2)
+        self.assertEqual(guest.count('private.service_diagnostic('), 2)
         final = guest.split('    finally:', 1)[1]
-        self.assertIn("private.service_diagnostic(BASE / (CORE_UNIT + '.log'))", final)
+        self.assertIn('private.service_diagnostic(', final)
         self.assertIn("report['passed'] = report['phase'] == 'complete' and report['failure'] is None", final)
         start = inspect.getsource(TRIAL.start)
         self.assertIn('--setenv=RUST_LOG=off,volparossa::compute::private_diagnostic=debug', start)
         self.assertNotIn('core_diagnostics', inspect.getsource(TRIAL.validate_task_selection))
+
+    def test_memory_collector_opt_in_is_native_only_at_both_existing_call_sites(self):
+        # Evaluate the two production call expressions without running a guest,
+        # loading a model or contacting any service. The second is in finally.
+        guest = ast.parse(inspect.getsource(TRIAL.guest))
+        calls = [node for node in ast.walk(guest) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == 'service_diagnostic']
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            for backend in ('torch', 'llama_cpp_bf16_v1'):
+                private = SimpleNamespace(service_diagnostic=Mock(return_value={'inert': True}))
+                result = eval(compile(ast.Expression(call), '<diagnostic-call>', 'eval'),
+                              {'private': private, 'backend': backend,
+                               'BASE': Path('/inert/private'), 'CORE_UNIT': 'inert-core'})
+                self.assertEqual(result, {'inert': True})
+                expected = {} if backend == 'torch' else {'memory_enabled': True}
+                private.service_diagnostic.assert_called_once_with(
+                    Path('/inert/private/inert-core.log'), **expected)
 
     def test_task_arguments_preserve_torch_and_only_append_native_selection(self):
         legacy = [str(TRIAL.INPUT / 'runtime/node'), str(TRIAL.INPUT / 'code/scripts/smoke_opencode_inference.cjs'),
