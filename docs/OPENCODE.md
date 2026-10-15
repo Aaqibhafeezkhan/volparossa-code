@@ -798,13 +798,14 @@ launch a guest. There is no automatic inference run on push or pull request.
 ### Explicit native CPU candidate
 
 The native `llama_cpp_bf16_v1` backend currently pins core
-`6d65bb12ed7b8720d43868c9306313133a5b96ae` and llama.cpp source
+`7d0f9f0b492c5e692cc9d26f23d95f55f2c1e651` and llama.cpp source
 `7fe450e19305b828c199d602c23a8337aaa1f03b`, with the original Qwen4B BF16 model.
 It uses a resident connection-bound session, build-manifest v4, backend-manifest
 v3 and the explicitly selected `qwen_tagged_tool_json_v1` output constraint.
 
 In [trial 38806073909](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38806073909),
-Code `cce5a211a0624fdcc05a787bd4ff31422b30ae65` and that core completed
+Code `cce5a211a0624fdcc05a787bd4ff31422b30ae65` and core
+`6d65bb12ed7b8720d43868c9306313133a5b96ae` completed
 **the bounded coding task, not the whole trial**. Five real model results
 produced four tool calls and a final response: two reads, one approved edit and
 one approved bash test. The original test remained unchanged, the independent
@@ -835,9 +836,33 @@ counters remain errors. The same absolute deadlines include this handshake.
 [Source checks](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38815603511)
 pass 533 distinct tests with five explicit skips, including all 29 holder tests.
 The corrected [full trial 38816006720](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38816006720)
-is bound to Code `0031c0e97f8bd0221c207c5a0f00370073cf617d` and the same core,
-model, ordinary tools, permissions and budgets. Its whole-trial acceptance is
-still pending; source checks do not supply missing execution evidence.
+is bound to Code `0031c0e97f8bd0221c207c5a0f00370073cf617d` and core `6d65bb12`,
+with the same model, ordinary tools, permissions and budgets. Its holder
+retains task exit status 1 and actual memory counters: peak 740,012,032 bytes
+within 768 MiB, zero swap and OOM kills. This task instead fails on
+`compute_control_ack_deadline` after two reads and an approved edit, before
+any test. Eight controls were issued and seven acknowledged, leaving a pause
+outstanding. All four requests confirm cleanup; guest units and private data
+are removed. Later success-only input and graceful core-stop checks remain
+absent. The record does not identify a particular slow native call.
+
+Original artifact and log ZIP SHA-256 values are respectively
+`06ce2a9e821df25a28551f1160ca686acb8adac722637ee0537d692b2c7da83c`
+and `e97b9384a917831904490fa9b805629a12dd533cb6fee80878bd98f237622ba7`.
+
+The current core pin adds adaptive prefill checkpoints: begin with 16 tokens,
+then adapt within 1–128 tokens using synchronized decode duration, excluding
+owner-requested pause time. All prompt tokens and retained-prefix rules remain;
+acknowledgement still follows joined native work. The original ten-second
+guard fails closed if even one token stalls. This is not preemption or a
+latency guarantee, and changed batching need not produce bit-identical output.
+
+All 116 core inert contracts pass, including 18 new scheduling cases. Code's
+pin integration passes 88 focused cases with one explicit optional patched-loader
+fixture skip; the actual pinned core imports and CPU-overlay checks pass.
+Native C++, builder/converter, IPC, supervisor and resource limits are unchanged.
+The older Torch pins and golden encodings remain intact. No new actual coding
+acceptance or native performance result is established by these source checks.
 
 #### Earlier native CPU trials
 

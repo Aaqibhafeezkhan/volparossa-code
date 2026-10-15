@@ -78,14 +78,19 @@ OpenCode and core inference. The original tests stayed unchanged and an
 independent check passed. The bounded coding task took about 37 minutes; this
 does not establish competitive performance or general coding quality.
 
-The **whole trial still failed** during its final checks: task-resource
-measurements and the later input-integrity and graceful core-stop results were
-not retained. Runtime and owned guest cleanup were confirmed separately. The
-follow-up keeps the task's resource counters available until the parent has
-verified them, without changing the model, ordinary tools, permissions or
-budgets. Its source checks pass; the [new complete trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38816006720)
-has not yet been accepted. Native editor UI operation, protected peer execution
-and the complete immune-policy path also remain unproved. See the
+The **whole trial still failed** during its final checks; required task-resource
+measurements and later checks were not retained. The
+[follow-up trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38816006720)
+retains the task status and memory counters, but encounters a different failure:
+after two reads and an edit, the worker misses a pause acknowledgement. No test
+command completes in that run.
+
+The next candidate processes the complete model prompt in adaptively sized
+blocks, allowing more frequent safe pause checkpoints. The model, ordinary
+tools, permissions, budgets and ten-second pause guard are unchanged. Focused
+source checks pass; real responsiveness and complete execution still need a new
+trial. Native editor UI operation, protected peer execution and the complete
+immune-policy path also remain unproved. See the
 [native CPU evidence](docs/OPENCODE.md#explicit-native-cpu-candidate).
 
 **Real public peer proof:** a separate owner command successfully obtained a
