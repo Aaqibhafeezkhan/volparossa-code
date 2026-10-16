@@ -4,11 +4,11 @@ The selected foundation is OpenCode v1.18.34 at
 `aec0b9a6d8898f68f923aaf08b7306d931fd9d76`. Codex scripts and reports are historical,
 not an alternative implicitly selected by the editor.
 
-The native Qwen4B path has completed a bounded model-driven read/edit/test task,
-but the enclosing trial failed during its final checks. The corrected full
-trial has not yet been accepted. See [current native CPU evidence](#explicit-native-cpu-candidate)
-for the exact sources and remaining acceptance requirements. Historical trial
-records below retain their original pins and failed outcomes.
+The native Qwen4B path passes a bounded model-driven read/edit/test task and its
+complete guest/VM lifecycle. See [current native CPU evidence](#explicit-native-cpu-candidate)
+for the exact tested core candidate and remaining editor, peer-execution and
+quality work. Historical trial records below retain their original pins and
+failed outcomes.
 
 ## Explicit source build
 
@@ -490,7 +490,7 @@ the report explicitly records `model_inference: false` and `peer_execution: fals
 Its `native-cooperative-smoke-report.json` is separate from the local-tool report.
 Neither synthetic report may be relabelled as real inference or immune-policy
 proof. A separate [real native task](#explicit-native-cpu-candidate) now proves
-bounded model-driven coding, with whole-trial acceptance still pending. Native
+bounded model-driven coding and its complete local execution lifecycle. Native
 editor UI operation, confidential peer execution and full immune supervision
 remain unproved.
 
@@ -802,6 +802,47 @@ The native `llama_cpp_bf16_v1` backend currently pins core
 `7fe450e19305b828c199d602c23a8337aaa1f03b`, with the original Qwen4B BF16 model.
 It uses a resident connection-bound session, build-manifest v4, backend-manifest
 v3 and the explicitly selected `qwen_tagged_tool_json_v1` output constraint.
+
+#### Accepted bounded coding lifecycle
+
+[Original trial 38824828727](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38824828727)
+passes on Code `fd4ff9688c58d6228e07f2116a7e8dcdb12a89ef` and that exact core
+candidate. All five native requests complete: four tool calls (two reads,
+one approved edit and one approved bash test), then a final assistant response.
+The independent three-case checker passes, the original tests remain unchanged,
+and no synthetic core or injected model answer supplies the result. The task
+takes 2,219,455 ms, about 37 minutes.
+
+The task exits successfully and retains its actual memory counters: peak
+740,847,616 bytes within 768 MiB. Core peak is 6,912,872,448 bytes within 11 GiB;
+both report zero swap and OOM kills. The outer QEMU cgroup reaches its memory
+limit and records memory-max events, but no OOM or OOM kill. This is not evidence
+of pressure-free execution or competitive performance.
+
+All request cleanups, separate runtime/session closure, project removal,
+unchanged guest inputs, empty guest units and graceful core shutdown pass.
+QEMU joins, its scratch space is removed and job-owned host changes are restored.
+The observed host route/DNS configuration matches after normalization; this
+does not cover a full host firewall inventory.
+
+Source-bound per-turn validation checks correlated worker-control
+acknowledgements under the unchanged guard. No per-acknowledgement counts or
+pause latencies are exported, so neither is claimed. All 35 packed Code source
+files match the tested commit, the complete core archive matches `7d0f9f0b`,
+and the input manifest and native wrapper/build/model provenance are verified.
+The legacy `code_contains_uncommitted_changes: true` receipt field is a
+hardcoded packaging label, not a measured dirty checkout; the independent
+source binding and CI clean-checkout check establish the actual inputs.
+
+Original artifact and log ZIP SHA-256 values are respectively
+`abf57ddb609c631746d1d9bcd532a17e73c52d5a321f096eaef3e6a713bf3abe`
+and `18098c557bb8a56caa78c2a7823c9007bd71474e85f687595c8339d944943ab4`.
+This accepts the bounded local coding lifecycle, not native editor UI,
+protected private-peer execution or general coding quality. The core dependency
+remains pinned to the tested candidate while its separate Storage integration
+continues; core `main` is not an interchangeable dependency.
+
+#### Earlier failures and the prefill correction
 
 In [trial 38806073909](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38806073909),
 Code `cce5a211a0624fdcc05a787bd4ff31422b30ae65` and core

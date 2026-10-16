@@ -72,25 +72,21 @@ enrolled public snapshot crosses the bridge. Both trials use **synthetic core/mo
 replies**, not real inference or peer execution. Focused checks additionally cover
 adapter, editor and lifecycle behavior.
 
-**Real model-driven coding:** the [Qwen4B native CPU trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38806073909)
-completed two reads, an approved edit and an approved test through actual
-OpenCode and core inference. The original tests stayed unchanged and an
-independent check passed. The bounded coding task took about 37 minutes; this
-does not establish competitive performance or general coding quality.
+**Real model-driven coding:** the [Qwen4B native CPU trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38824828727)
+passes the bounded coding task **and its complete lifecycle**. Actual OpenCode
+and core inference produce two reads, an approved edit, an approved test and
+a final response. The original tests stay unchanged and an independent check
+passes. Task-resource measurements, unchanged inputs, clean core shutdown and
+guest/VM cleanup are verified.
 
-The **whole trial still failed** during its final checks; required task-resource
-measurements and later checks were not retained. The
-[follow-up trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38816006720)
-retains the task status and memory counters, but encounters a different failure:
-after two reads and an edit, the worker misses a pause acknowledgement. No test
-command completes in that run.
-
-The next candidate processes the complete model prompt in adaptively sized
-blocks, allowing more frequent safe pause checkpoints. The model, ordinary
-tools, permissions, budgets and ten-second pause guard are unchanged. Focused
-source checks pass; real responsiveness and complete execution still need a new
-trial. Native editor UI operation, protected peer execution and the complete
-immune-policy path also remain unproved. See the
+The task takes about 37 minutes on the disposable CPU runner; this is a working
+development slice, not competitive performance or general coding-quality proof.
+The core processes the complete prompt in adaptive blocks while retaining the
+model, permissions, resource budgets and ten-second owner-control guard. Earlier
+failed trials remain documented. This path pins the exact tested core candidate
+`7d0f9f0b`, rather than selecting whichever core happens to be on `main`.
+Native editor UI operation, protected peer execution and the complete
+immune-policy path remain open. See the
 [native CPU evidence](docs/OPENCODE.md#explicit-native-cpu-candidate).
 
 **Real public peer proof:** a separate owner command successfully obtained a
@@ -157,9 +153,8 @@ notice and source pin are preserved in [third-party provenance](THIRD_PARTY_LICE
 
 ## Remaining work
 
-- Complete the whole real-model trial, including task-resource measurements,
-  input-integrity checks and graceful core shutdown after the proven bounded
-  read/edit/test task, then verify native editor operation.
+- Verify native editor operation with the proven real-model read/edit/test
+  lifecycle, and improve measured coding quality, speed and resource use.
 - Extend the proven public single-file owner command to a complete real-model
   OpenCode cooperative tool loop; retain original results, cancellation and provenance.
 - Implement remote conversation execution and actual protected private work,
