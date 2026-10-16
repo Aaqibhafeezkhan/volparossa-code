@@ -7,8 +7,41 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const {commandKind, approvalKind, ORIGINAL, TEST, retainFailure, closeRuntime,
-  createTrialVerifier, runNativeTrial, bindRuntimeModel} = require('../scripts/smoke_opencode_inference.cjs');
+  createTrialVerifier, runNativeTrial, bindRuntimeModel, trialArguments, selectionEvidence,
+  startTrialRuntime} = require('../scripts/smoke_opencode_inference.cjs');
 const {emptyTaskDiagnostic} = require('../src/opencode-bridge.cjs');
+const {OpenCodeRuntime} = require('../src/opencode-runtime.cjs');
+const PROFILE = 'qwen_tagged_tool_json_v1';
+
+test('trial argument profile is exact, opt-in, and absent from original Torch receipt', () => {
+  const args = ['--execute', '--yes', '--node', '/inert/node', '--build-report', '/inert/build.json',
+    '--socket', '/inert/private.sock', '--project-parent', '/inert/projects', '--output', '/inert/task.json'];
+  const legacy = {node: '/inert/node', buildReport: '/inert/build.json', socketPath: '/inert/private.sock',
+    parent: '/inert/projects', output: '/inert/task.json'};
+  assert.deepEqual(trialArguments(args), legacy);
+  assert.deepEqual(trialArguments([...args, '--output-constraint', PROFILE]), {...legacy, outputConstraint: PROFILE});
+  assert.deepEqual(selectionEvidence(undefined), {});
+  assert.deepEqual(selectionEvidence(PROFILE), {version: 2, output_constraint: PROFILE});
+  for (const tail of [['--output-constraint'], ['--output-constraint', 'unknown'], ['--grammar', PROFILE],
+    ['--output-constraint', PROFILE, '--extra', 'value']]) assert.throws(() => trialArguments([...args, ...tail]));
+  for (const selection of [null, false, 1, '', 'greedy_v1', 'unknown']) assert.throws(() => selectionEvidence(selection));
+});
+
+test('selected native trial reaches the real runtime entry with explicit config, without changing legacy config', async t => {
+  const observed = [], runtime = {synthetic: true};
+  t.mock.method(OpenCodeRuntime, 'start', async (config, options) => { observed.push({config, options}); return runtime; });
+  const config = {version: 1, opencode: '/inert/opencode', opencodeSha256: 'a'.repeat(64),
+    buildReport: '/inert/build.json', node: '/inert/node', nodeSha256: 'b'.repeat(64), socketPath: '/inert/private.sock'};
+  const original = structuredClone(config);
+  assert.equal(await startTrialRuntime(config, '/inert/project'), runtime);
+  assert.equal(await startTrialRuntime(config, '/inert/project', PROFILE), runtime);
+  assert.deepEqual(observed, [{config: original, options: {workspace: '/inert/project'}},
+    {config: {...original, outputConstraint: PROFILE}, options: {workspace: '/inert/project'}}]);
+  assert.deepEqual(config, original);
+  for (const value of [null, 'unknown']) await assert.rejects(startTrialRuntime(config, '/inert/project', value));
+  await assert.rejects(startTrialRuntime({...config, outputConstraint: PROFILE}, '/inert/project'));
+  assert.equal(observed.length, 2); // Rejected selection cannot start any runtime.
+});
 
 async function trialProject(t) {
   const project = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-trial-wiring-'));

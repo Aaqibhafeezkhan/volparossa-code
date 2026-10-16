@@ -51,7 +51,10 @@ function runtimeSettings({baseUrl, bearerToken, password, cooperative = false, m
       models: {[model]: {name: 'VOLPAROSSA core conversation',
         limit: {context: expectedLimits(model).model_context_tokens, output: expectedLimits(model).max_new_tokens},
         tool_call: true, reasoning: false,
-        modalities: {input: ['text'], output: ['text']}}},
+        modalities: {input: ['text'], output: ['text']},
+        // Pinned OpenCode otherwise drops agent.temperature, silently omitting
+        // the zero-temperature request that selects core's negotiated greedy_v1.
+        temperature: true}},
     }},
   };
   const env = {

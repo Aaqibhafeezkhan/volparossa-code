@@ -27,13 +27,30 @@ test('pinned runtime uses only core provider with separate one-shot tool boundar
   assert.equal(Object.hasOwn(env, 'HOME'), false);
   assert.equal(Object.hasOwn(env, 'OPENAI_API_KEY'), false);
 });
-test('legacy 0.6B defaults, prompts and permissions remain byte-identical', () => {
+test('legacy 0.6B settings change only the explicit temperature capability', () => {
   const golden = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/opencode-default-settings.json'), 'utf8'));
   for (const cooperative of [false, true]) {
+    const expected = structuredClone(golden[cooperative ? 'cooperative' : 'default']);
+    assert.equal(Object.hasOwn(expected.config.provider.volparossa.models[MODEL], 'temperature'), false);
+    expected.config.provider.volparossa.models[MODEL].temperature = true;
+    expected.env.OPENCODE_CONFIG_CONTENT = JSON.stringify(expected.config);
     // Direct exact bytes, including key order and the synthetic environment;
-    // this regression fixture is not a password-storage or authentication hash.
+    // the historical fixture stays unchanged; no prompt, limit, permission or
+    // other environment change can hide behind this explicit capability delta.
     assert.equal(JSON.stringify(runtimeSettings({...input, cooperative})),
-      JSON.stringify(golden[cooperative ? 'cooperative' : 'default']));
+      JSON.stringify(expected));
+  }
+});
+test('both model profiles advertise temperature so every coding role actually requests zero', () => {
+  for (const model of [MODEL, 'qwen3-4b-instruct-2507-v1']) {
+    for (const cooperative of [false, true]) {
+      const {config, env} = runtimeSettings({...input, model, cooperative});
+      assert.equal(config.provider.volparossa.models[model].temperature, true);
+      for (const role of ['build', 'general', 'explore']) {
+        assert.equal(config.agent[role].temperature, 0);
+      }
+      assert.deepEqual(JSON.parse(env.OPENCODE_CONFIG_CONTENT), config);
+    }
   }
 });
 test('4B settings use only the exact core-selected profile without changing task or tool policy', () => {

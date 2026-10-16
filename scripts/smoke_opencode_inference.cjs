@@ -11,6 +11,7 @@ const {OpenCodeRuntime} = require('../src/opencode-runtime.cjs');
 const {taskFailure} = require('../src/opencode-bridge.cjs');
 const {createWorkspaceVerifier} = require('../src/workspace-verifier.cjs');
 const {isCodingModel} = require('../src/opencode-config.cjs');
+const {OUTPUT_CONSTRAINT} = require('../src/private-conversation.cjs');
 
 const ORIGINAL = 'def add(a, b):\n    return a - b\n';
 const TEST = 'import unittest\nfrom fixture import add\n\nclass AddTests(unittest.TestCase):\n'
@@ -151,6 +152,28 @@ function guestGuard() {
   assert.equal(virt.status, 0); assert.equal(virt.stdout.trim(), 'kvm');
 }
 
+function trialArguments(args) {
+  assert.ok(args.length === 12 || args.length === 14);
+  assert.deepEqual(args.slice(0, 12).filter((_, index) => index < 2 || index % 2 === 0),
+    ['--execute', '--yes', '--node', '--build-report', '--socket', '--project-parent', '--output']);
+  if (args.length === 14) assert.deepEqual(args.slice(12), ['--output-constraint', OUTPUT_CONSTRAINT]);
+  const [, , , node, , buildReport, , socketPath, , parent, , output] = args;
+  return {node, buildReport, socketPath, parent, output,
+    ...(args.length === 14 ? {outputConstraint: OUTPUT_CONSTRAINT} : {})};
+}
+
+function selectionEvidence(outputConstraint) {
+  assert.ok(outputConstraint === undefined || outputConstraint === OUTPUT_CONSTRAINT);
+  return outputConstraint === undefined ? {} : {version: 2, output_constraint: OUTPUT_CONSTRAINT};
+}
+
+async function startTrialRuntime(config, project, outputConstraint) {
+  selectionEvidence(outputConstraint); // Same closed opt-in as the task receipt.
+  assert.equal(Object.hasOwn(config, 'outputConstraint'), false);
+  return OpenCodeRuntime.start({...config,
+    ...(outputConstraint !== undefined ? {outputConstraint} : {})}, {workspace: project});
+}
+
 async function main(args = process.argv.slice(2)) {
   if (!args.length || args[0] === '--preview') {
     process.stdout.write(JSON.stringify({execute: false, actual_inference: false,
@@ -158,10 +181,8 @@ async function main(args = process.argv.slice(2)) {
       usage: '--execute --yes --node ABS --build-report ABS --socket ABS --project-parent ABS --output NEW'}) + '\n');
     return;
   }
-  assert.deepEqual(args.filter((_, index) => index < 2 || index % 2 === 0),
-    ['--execute', '--yes', '--node', '--build-report', '--socket', '--project-parent', '--output']);
-  assert.equal(args.length, 12); guestGuard();
-  const [, , , node, , buildReport, , socketPath, , parent, , output] = args;
+  const {node, buildReport, socketPath, parent, output, outputConstraint} = trialArguments(args);
+  guestGuard();
   await owned(parent, true); await owned(path.dirname(output), true);
   assert.ok(path.isAbsolute(output) && !path.basename(output).startsWith('.'));
   await fs.lstat(output).then(() => { throw Error('existing_output'); }, error => { if (error.code !== 'ENOENT') throw error; });
@@ -184,7 +205,8 @@ async function main(args = process.argv.slice(2)) {
     model_profile: null, approved_read: 0, approved_edit: 0, approved_test: 0,
     refused: 0, completed_commands: 0, failed_commands: 0, original_test_unchanged: false,
     fixture_changed: false, independent_test_passed: false, runtime_cleanup_confirmed: false,
-    project_removed: false, original_sha256: hash(ORIGINAL), resulting_sha256: null, elapsed_ms: 0};
+    project_removed: false, original_sha256: hash(ORIGINAL), resulting_sha256: null, elapsed_ms: 0,
+    ...selectionEvidence(outputConstraint)};
   const begin = Date.now(), controller = new AbortController();
   const deadline = setTimeout(() => controller.abort(), 2400000);
   const interrupted = () => controller.abort();
@@ -199,7 +221,7 @@ async function main(args = process.argv.slice(2)) {
     assert.equal(await isolatedCheck(project, parent), false, 'fixture baseline must really fail');
     const verify = createTrialVerifier(project);
     evidence.phase = 'runtime-start';
-    runtime = await OpenCodeRuntime.start(config, {workspace: project});
+    runtime = await startTrialRuntime(config, project, outputConstraint);
     bindRuntimeModel(evidence, runtime);
     evidence.phase = 'native-task';
     await runNativeTrial(runtime, project, controller, evidence, verify);
@@ -238,4 +260,5 @@ if (require.main === module) main().catch(() => {
   process.stderr.write('{"passed":false,"phase":"guard","failure":"guard_or_input_rejected"}\n'); process.exitCode = 1;
 });
 module.exports = {main, commandKind, approvalKind, ORIGINAL, TEST, guestGuard, retainFailure, closeRuntime,
-  createTrialVerifier, runNativeTrial, bindRuntimeModel, isolatedCheck};
+  createTrialVerifier, runNativeTrial, bindRuntimeModel, isolatedCheck,
+  trialArguments, selectionEvidence, startTrialRuntime};

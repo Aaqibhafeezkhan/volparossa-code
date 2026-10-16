@@ -23,6 +23,80 @@ test('actual framed socket uses separate handshake and yields exact cleanup-conf
   await assert.rejects(f.client.ask({ question: 'legacy', context: 'must not send' }));
 });
 
+test('execution error negotiation is independent, strict, and unchanged when absent', async t => {
+  for (const value of [null, 0, 2, true]) {
+    assert.throws(() => new PrivateConversation('/fixture/core.sock', {executionErrorVersion: value}),
+      /unsupported_execution_error_version/);
+  }
+  for (const advertised of [caps(), {...caps(), execution_error_version: null},
+    {...caps(), execution_error_version: 2}]) {
+    const f = await fixture(t, () => assert.fail('must not submit'), advertised, {executionErrorVersion: 1});
+    await assert.rejects(f.client.connect(), {code: 'incompatible_capabilities'});
+    assert.deepEqual(f.requests[0].operation, {type: 'conversation_capabilities', execution_error_version: 1});
+  }
+  const unsolicited = await fixture(t, () => assert.fail('must not submit'), {...caps(), execution_error_version: 1});
+  await assert.rejects(unsolicited.client.connect());
+});
+
+test('only a negotiated admitted task has a budget-error cleanup receipt, with request-local provenance', async t => {
+  let submitted = 0;
+  const f = await fixture(t, (socket, request) => {
+    if (++submitted === 1) reply(socket, request, 'admitted');
+    reply(socket, request, 'error', {code: 'execution_budget_exceeded'});
+  }, {...caps(), execution_error_version: 1}, {executionErrorVersion: 1});
+  await f.client.connect();
+  let accepted;
+  await assert.rejects(f.client.submit(input()), error => {
+    accepted = error;
+    assert.equal(error.code, 'execution_budget_exceeded');
+    assert.equal(terminalCleanupConfirmed(error), true);
+    return true;
+  });
+  await assert.rejects(f.client.submit(input()), error => {
+    assert.equal(error.code, 'invalid_response');
+    assert.equal(terminalCleanupConfirmed(error), false);
+    return true;
+  });
+  assert.equal(terminalCleanupConfirmed({...accepted, cleanupConfirmed: true}), false);
+  assert.equal(terminalCleanupConfirmed(Object.assign(Error(accepted.message), {code: accepted.code})), false);
+  assert.equal(terminalCleanupConfirmed(accepted), true);
+});
+
+test('legacy, wrong-id, cancel-id and handshake budget codes never become cleanup receipts', async t => {
+  for (const mode of ['legacy', 'wrong-id', 'cancel-id']) {
+    let admitted;
+    const ready = new Promise(resolve => { admitted = resolve; });
+    const f = await fixture(t, (socket, request) => {
+      if (request.operation.type === 'submit_conversation') {
+        reply(socket, request, 'admitted');
+        if (mode === 'cancel-id') { admitted(); return; }
+      }
+      reply(socket, mode === 'wrong-id' ? {...request, id: 'f'.repeat(32)} : request,
+        'error', {code: 'execution_budget_exceeded'});
+    }, mode === 'legacy' ? caps() : {...caps(), execution_error_version: 1},
+    mode === 'legacy' ? {} : {executionErrorVersion: 1});
+    await f.client.connect();
+    const controller = new AbortController();
+    const pending = f.client.submit(input(), {signal: controller.signal});
+    const rejected = assert.rejects(pending, error => {
+      assert.equal(error.code, 'invalid_response', mode);
+      assert.equal(terminalCleanupConfirmed(error), false, mode);
+      return true;
+    });
+    if (mode === 'cancel-id') { await ready; controller.abort(); }
+    await rejected;
+  }
+  // Pure dispatch guard at the handshake boundary; no synthetic execution claim.
+  const client = new PrivateConversation('/fixture/core.sock', {executionErrorVersion: 1});
+  client.state = 'connecting'; client.handshake = {id: 'a'.repeat(32)};
+  assert.throws(() => client._response({version: 1, id: client.handshake.id, event: 'error',
+    code: 'execution_budget_exceeded'}), error => {
+    assert.equal(error.code, 'invalid_response');
+    assert.equal(terminalCleanupConfirmed(error), false);
+    return true;
+  });
+});
+
 test('negotiated greedy requests require matching result evidence and cannot silently use a legacy core', async t => {
   const model = 'qwen3-0.6b-v1';
   const negotiated = { ...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'] };
@@ -82,6 +156,59 @@ test('closed 4B profile binds exact template, limits, greedy policy and returned
       reply(socket, message, 'admitted'); reply(socket, message, 'result', {result: {...answer, ...change}});
     }, structuredClone(negotiated), {generationPolicyVersion: 1});
     await wrong.client.connect(); await assert.rejects(wrong.client.submit(request));
+  }
+});
+
+test('owner-selected native CPU capability pair preserves greedy socket requests and unchanged summaries', async t => {
+  // Framed socket contract only; no native backend, model or OpenCode is loaded.
+  const model = 'qwen3-4b-instruct-2507-v1';
+  for (const backend of [{}, {inference_backend: 'llama_cpp_bf16_v1', required_generation_policy: 'greedy_v1'}]) {
+    const negotiated = {...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'],
+      execution_error_version: 1, ...backend};
+    const request = {...input(), generation_policy: 'greedy_v1'};
+    const answer = {...result(undefined, model), generation_policy: 'greedy_v1'};
+    const f = await fixture(t, (socket, message) => {
+      reply(socket, message, 'admitted'); reply(socket, message, 'result', {result: answer});
+    }, structuredClone(negotiated), {generationPolicyVersion: 1, executionErrorVersion: 1});
+    assert.deepEqual(await f.client.connect(), negotiated);
+    const returned = await f.client.submit(request);
+    assert.deepEqual(returned, answer);
+    assert.equal(Object.hasOwn(returned, 'inference_backend'), false);
+    assert.deepEqual(f.requests[0].operation, {type: 'conversation_capabilities',
+      generation_policy_version: 1, execution_error_version: 1});
+    assert.deepEqual(f.requests[1].operation.conversation, request);
+  }
+});
+
+test('partial, unknown or unnegotiated native CPU capabilities fail before submission', async t => {
+  const model = 'qwen3-4b-instruct-2507-v1';
+  const pair = {inference_backend: 'llama_cpp_bf16_v1', required_generation_policy: 'greedy_v1'};
+  const negotiated = {...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'], ...pair};
+  const invalid = [
+    {...negotiated, inference_backend: undefined},
+    {...negotiated, required_generation_policy: undefined},
+    {...negotiated, inference_backend: null},
+    {...negotiated, inference_backend: 'llama_cpp_bf16_v2'},
+    {...negotiated, required_generation_policy: null},
+    {...negotiated, required_generation_policy: 'sampled'},
+    {...negotiated, ...caps('qwen3-0.6b-v1')},
+    {...negotiated, ...caps('smollm2-360m-v1')},
+    {...negotiated, generation_policy_version: undefined},
+    {...negotiated, generation_policy_version: 2},
+    {...negotiated, generation_policies: []},
+    {...negotiated, generation_policies: ['sampled']},
+    {...negotiated, executable_path: '/untrusted/backend'},
+  ];
+  for (const advertised of invalid) {
+    const f = await fixture(t, () => assert.fail('invalid backend must not submit'), advertised,
+      {generationPolicyVersion: 1});
+    await assert.rejects(f.client.connect());
+    assert.equal(f.requests.length, 1);
+  }
+  for (const advertised of [{...caps(model), ...pair}, negotiated]) {
+    const f = await fixture(t, () => assert.fail('unnegotiated backend must not submit'), advertised);
+    await assert.rejects(f.client.connect());
+    assert.equal(f.requests.length, 1);
   }
 });
 

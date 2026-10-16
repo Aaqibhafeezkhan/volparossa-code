@@ -9,7 +9,7 @@ const {randomBytes} = require('node:crypto');
 const {setTimeout: delay} = require('node:timers/promises');
 const {OpenCodeClient} = require('../src/opencode-client.cjs');
 const {OpenCodeTask} = require('../src/opencode-task.cjs');
-const {PrivateConversation, capabilities} = require('../src/private-conversation.cjs');
+const {PrivateConversation, capabilities, OUTPUT_CONSTRAINT} = require('../src/private-conversation.cjs');
 const {startChatCompletionsProvider} = require('../src/chat-completions-provider.cjs');
 const {runtimeSettings, isCodingModel} = require('../src/opencode-config.cjs');
 const {readFrames, writeFrame, taskFailure, record, validVerification} = require('../src/opencode-bridge.cjs');
@@ -44,9 +44,12 @@ async function port() {
   await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   return value;
 }
-async function runSession({input, output, events = process}, hooks = {}) {
+async function runSession({input, output, events = process, outputConstraint}, hooks = {}) {
+  if (outputConstraint !== undefined && outputConstraint !== OUTPUT_CONSTRAINT) return 1;
   const spawnServer = hooks.spawn ?? spawn;
   let provider, child, exited, client, task, running, closing = false, bad = false, requested = false;
+  let nativeSession = false, providerClosing;
+  const closeProvider = () => providerClosing ??= provider.close();
   let seq = 0, verificationSeq = 0, pendingApproval, pendingVerification, finish;
   const expiredApprovals = new Set();
   const expiredVerifications = new Set();
@@ -116,10 +119,14 @@ async function runSession({input, output, events = process}, hooks = {}) {
         Buffer.byteLength(value.prompt) > 65536) { broken(); return; }
     requested = true;
     running = task.run(value.prompt, {signal: abort.signal,
-      ...(verification ? {verify, maxVerificationRounds: verification.maxRounds} : {})}).then(result => {
+      ...(verification ? {verify, maxVerificationRounds: verification.maxRounds} : {})}).then(async result => {
+      // One ordinary OpenCode task owns the warm model connection. Its final
+      // result is not released to the owner before private session state is gone.
+      if (nativeSession) await closeProvider();
       if (!closing) send({type: 'result', result, diagnostics: provider?.diagnostics?.summary ?? null,
         task_diagnostics: task.diagnostics ?? null});
-    }).catch(error => {
+    }).catch(async error => {
+      if (nativeSession) { try { await closeProvider(); } catch { bad = true; } }
       const reason = taskFailure(error);
       // A refused/incomplete/cancelled task is still a failed task, not proof of
       // failed runtime cleanup. OpenCodeTask has already awaited session deletion;
@@ -135,20 +142,24 @@ async function runSession({input, output, events = process}, hooks = {}) {
   for (const name of ['SIGTERM', 'SIGINT', 'SIGHUP']) events.once(name, broken);
   try {
     const caps = capabilities(await (hooks.preflight ?? (async () => {
-      const core = new PrivateConversation('/opt/core/compute.sock', {generationPolicyVersion: 1});
+      const core = new PrivateConversation('/opt/core/compute.sock', {generationPolicyVersion: 1, executionErrorVersion: 1,
+        ...(outputConstraint !== undefined ? {outputConstraintVersion: 1} : {})});
       try {
         return await core.connect();
       } finally { core.close(); }
-    }))(), 1);
+    }))(), 1, 1, outputConstraint !== undefined ? 1 : undefined);
     if (!isCodingModel(caps.model_profile) || !caps.native_tool_template || !caps.local_only ||
         caps.quarantined || !caps.generation_policies.includes('greedy_v1')) throw Error('capabilities');
+    if (outputConstraint !== undefined && !caps.output_constraints.includes(outputConstraint)) throw Error('capabilities');
     // The owner's already selected core determines this session's one model.
     // Each provider request rechecks that identity; a core change cannot silently
     // switch the native task to another profile or provider.
     const model = caps.model_profile;
+    nativeSession = caps.inference_backend === 'llama_cpp_bf16_v1';
     if (closing) throw Error('closed');
     provider = await (hooks.provider ?? startChatCompletionsProvider)({socketPath: '/opt/core/compute.sock', model,
-      diagnostics: true});
+      diagnostics: true, nativeSession,
+      ...(outputConstraint !== undefined ? {outputConstraint} : {})});
     const password = randomBytes(32).toString('hex');
     const cooperative = (hooks.cooperative ?? cooperativeMounted)();
     const settings = runtimeSettings({baseUrl: provider.baseUrl, bearerToken: provider.bearerToken, password, cooperative, model});
@@ -183,7 +194,7 @@ async function runSession({input, output, events = process}, hooks = {}) {
     client?.close();
     if (provider) {
       try {
-        await provider.close();
+        await closeProvider();
         if (provider.observations.submitted !== provider.observations.cleanup_confirmed) bad = true;
       } catch { bad = true; }
     }
@@ -204,7 +215,10 @@ async function runSession({input, output, events = process}, hooks = {}) {
 async function main() {
   if (process.platform !== 'linux' || process.getuid() === 0 || process.cwd() !== '/workspace' ||
       Object.keys(process.env).some(key => !['PATH', 'LANG'].includes(key))) return 1;
-  return runSession({input: process.stdin, output: process.stdout});
+  const args = process.argv.slice(2);
+  if (args.length && (args.length !== 2 || args[0] !== '--output-constraint' || args[1] !== OUTPUT_CONSTRAINT)) return 1;
+  return runSession({input: process.stdin, output: process.stdout,
+    ...(args.length ? {outputConstraint: OUTPUT_CONSTRAINT} : {})});
 }
 if (require.main === module) main().then(code => { process.exitCode = code; }, () => { process.exitCode = 1; });
 module.exports = {runSession, cooperativeMounted, prepareState};

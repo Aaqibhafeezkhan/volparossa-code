@@ -17,7 +17,7 @@ const FAILURE_CODES = new Set([
     'event_disposed', 'event_response', 'event_bound', 'event_invalid', 'event_closed',
     'event_transport', 'session', 'model', 'prompt'].map(code => `opencode_${code}`),
 ]);
-const PROVIDER_ERRORS = Object.freeze(['execution_failed', 'invalid_model_output', 'tool_choice_not_met',
+const PROVIDER_ERRORS = Object.freeze(['execution_failed', 'execution_budget_exceeded', 'invalid_model_output', 'tool_choice_not_met',
   'invalid_conversation', 'request_bound', 'busy', 'cancelled', 'cleanup_unconfirmed',
   'socket_unavailable', 'socket_error', 'disconnected', 'invalid_response',
   'incompatible_capabilities', 'provider_failed', 'other']);
@@ -63,6 +63,11 @@ function validTaskDiagnostic(value) {
 }
 function validProviderDiagnostic(value) {
   const template = emptyProviderDiagnostic();
+  // Historical v1 receipts predate the negotiated budget code. Accept either
+  // exact closed schema; never fabricate the missing counter or relax extras.
+  if (record(value?.request_errors) && !Object.hasOwn(value.request_errors, 'execution_budget_exceeded')) {
+    delete template.request_errors.execution_budget_exceeded;
+  }
   const matches = (actual, expected) => record(actual) && Object.keys(actual).length === Object.keys(expected).length
     && Object.entries(expected).every(([key, item]) => Object.hasOwn(actual, key) && (record(item)
       ? matches(actual[key], item) : typeof item === 'number'

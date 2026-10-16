@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -27,6 +26,8 @@ jobs:
         run: python3 -B -m unittest discover -s tests -p 'test_build_codex_runtime.py'
       - name: Check OpenCode source-build and namespace contracts
         run: python3 -B -m unittest discover -s tests -p 'test_*opencode*.py'
+      - name: Check explicit output-constraint session selection
+        run: python3 -B -m unittest discover -s tests -p test_output_constraint_session.py
 
 # No dependency installation, runtime/model download, real inference, editor
 # installation or privileged service startup. These are source/protocol checks.

@@ -21,7 +21,7 @@ NODE_VERSION = '24.19.0'
 NODE = (125989464, 'bc17c508ffeed0ec622934f9b7fa72f8e78da65350e63c3eceb56fa688aa5e12')
 NODE_LICENSE = (157606, '148eacf7863ef4329224a29398623077200a27194aa075569faf4a0a85566ca5')
 SOURCES = tuple('src/' + name for name in (
-    'private-compute.cjs', 'private-conversation.cjs', 'responses-provider.cjs',
+    'private-compute.cjs', 'private-conversation.cjs', 'private-native-session.cjs', 'responses-provider.cjs',
     'chat-completions-provider.cjs', 'opencode-config.cjs', 'opencode-client.cjs',
     'opencode-task.cjs', 'opencode-bridge.cjs', 'opencode-runtime.cjs',
     'cooperative-tool-client.cjs', 'cooperative-tool-server.cjs',

@@ -8,7 +8,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
-const { PrivateCompute } = require('../src/private-compute.cjs');
+const { PrivateCompute, terminalCleanupConfirmed } = require('../src/private-compute.cjs');
 
 function caps(overrides = {}) {
   return { visibility: 'private_local', local_only: true, model_profile: 'smollm2-360m-v1',
@@ -77,6 +77,20 @@ async function fixture(t, handler, options = {}) {
   });
   return { client, socketPath, directory, requests, sockets };
 }
+
+test('legacy Q&A never accepts the conversational terminal budget vocabulary', async t => {
+  const f = await fixture(t, (socket, request) => {
+    reply(socket, request, 'admitted');
+    reply(socket, request, 'error', {code: 'execution_budget_exceeded'});
+  });
+  await f.client.connect();
+  await assert.rejects(f.client.ask({question: 'Q', context: 'C'}), error => {
+    assert.equal(error.code, 'invalid_response');
+    assert.equal(terminalCleanupConfirmed(error), false);
+    return true;
+  });
+  assert.deepEqual(f.requests[0].operation, {type: 'capabilities'});
+});
 
 test('real Unix framing preserves the exact private result across partial and coalesced frames', async t => {
   const original = answer();

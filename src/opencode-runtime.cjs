@@ -3,13 +3,15 @@
 const path = require('node:path');
 const {spawn} = require('node:child_process');
 const {MODEL, isCodingModel} = require('./opencode-config.cjs');
+const {OUTPUT_CONSTRAINT} = require('./private-conversation.cjs');
 const {readFrames, writeFrame, record, isFailureCode, validProviderDiagnostic, validTaskDiagnostic,
   validVerification, validVerificationSummary} = require('./opencode-bridge.cjs');
 const FIELDS = ['version', 'opencode', 'opencodeSha256', 'buildReport', 'node', 'nodeSha256', 'socketPath'];
 const fail = (code = 'runtime_failed') => Object.assign(Error('opencode_runtime_unavailable_or_cleanup_unconfirmed'), {code});
 function configuration(value, workspace) {
-  if (!record(value) || value.version !== 1 || Object.keys(value).length !== FIELDS.length ||
-      !FIELDS.every(key => Object.hasOwn(value, key))) throw fail();
+  if (!record(value) || value.version !== 1 || !FIELDS.every(key => Object.hasOwn(value, key)) ||
+      Object.keys(value).some(key => !FIELDS.includes(key) && key !== 'outputConstraint') ||
+      Object.hasOwn(value, 'outputConstraint') && value.outputConstraint !== OUTPUT_CONSTRAINT) throw fail();
   for (const key of FIELDS.slice(1)) {
     const item = value[key];
     if (typeof item !== 'string' || !item || item.includes('\0') || Buffer.byteLength(item) > 4096 ||

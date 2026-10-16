@@ -275,13 +275,18 @@ class PrivateCompute {
     }
   }
 
+  // Only the negotiated conversation subclass can recognize this additive code.
+  // Q&A and legacy conversations retain their original closed error vocabulary.
+  _allowsExecutionBudgetError(_message) { return false; }
+
   _response(message) {
     requireValue(object(message) && message.version === 1 && typeof message.event === 'string');
     requireValue((typeof message.id === 'string' && /^[0-9a-f]{32}$/.test(message.id)) ||
       (message.id === null && message.event === 'error' && message.code === 'invalid_request'));
     if (message.event === 'error') {
       keys(message, ['version', 'id', 'event', 'code']);
-      requireValue(REMOTE_ERRORS.has(message.code));
+      const budgetError = message.code === 'execution_budget_exceeded' && this._allowsExecutionBudgetError(message);
+      requireValue(REMOTE_ERRORS.has(message.code) || budgetError);
       const error = failure(message.code);
       if (message.id === null) throw error;
       requireValue(message.id === this.handshake?.id || message.id === this.pending?.id ||
@@ -298,7 +303,7 @@ class PrivateCompute {
       // through cleanup. Uncertainty takes precedence as cleanup_unconfirmed.
       // Do not infer this receipt from an error code before admission or from a
       // transport failure that merely has the same message.
-      if (this.pending.admitted && ['execution_failed', 'cancelled'].includes(message.code)) {
+      if (this.pending.admitted && (['execution_failed', 'cancelled'].includes(message.code) || budgetError)) {
         cleanedFailures.add(error);
       }
       this._settle(error);

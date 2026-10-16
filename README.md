@@ -63,16 +63,31 @@ not Codex. It joins these implemented components:
 - An explicit Linux launcher with a selected writable project, temporary state,
   no inherited account credentials and no external network interface.
 
-**Current proof:** the pinned OpenCode source builds and the actual runtime
+**Runtime and adapter proof:** the pinned OpenCode source builds and the actual runtime
 completes a tool loop through the production launcher and adapters: one approved
 command changes a disposable file, its tool result returns to the core interface,
 and the session shuts down cleanly. A second native trial invokes the cooperative
 tool, preserves complete and incomplete core results, and confirms that only the
 enrolled public snapshot crosses the bridge. Both trials use **synthetic core/model
 replies**, not real inference or peer execution. Focused checks additionally cover
-adapter, editor and lifecycle behavior. The complete model-driven OpenCode
-read/edit/test loop, native editor UI operation, protected peer execution and a
-finished immune-policy path remain unproved.
+adapter, editor and lifecycle behavior.
+
+**Real model-driven coding:** the [Qwen4B native CPU trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/38824828727)
+passes the bounded coding task **and its complete lifecycle**. Actual OpenCode
+and core inference produce two reads, an approved edit, an approved test and
+a final response. The original tests stay unchanged and an independent check
+passes. Task-resource measurements, unchanged inputs, clean core shutdown and
+guest/VM cleanup are verified.
+
+The task takes about 37 minutes on the disposable CPU runner; this is a working
+development slice, not competitive performance or general coding-quality proof.
+The core processes the complete prompt in adaptive blocks while retaining the
+model, permissions, resource budgets and ten-second owner-control guard. Earlier
+failed trials remain documented. This path pins the exact tested core candidate
+`7d0f9f0b`, rather than selecting whichever core happens to be on `main`.
+Native editor UI operation, protected peer execution and the complete
+immune-policy path remain open. See the
+[native CPU evidence](docs/OPENCODE.md#explicit-native-cpu-candidate).
 
 **Real public peer proof:** a separate owner command successfully obtained a
 small single-file replacement from a real Qwen0.6B worker on another peer.
@@ -138,9 +153,8 @@ notice and source pin are preserved in [third-party provenance](THIRD_PARTY_LICE
 
 ## Remaining work
 
-- Exercise the source-built OpenCode runtime with actual core inference and a
-  model-driven read/edit/test task with explicit local approvals and independently
-  checked results, then verify native editor operation.
+- Verify native editor operation with the proven real-model read/edit/test
+  lifecycle, and improve measured coding quality, speed and resource use.
 - Extend the proven public single-file owner command to a complete real-model
   OpenCode cooperative tool loop; retain original results, cancellation and provenance.
 - Implement remote conversation execution and actual protected private work,

@@ -18,9 +18,9 @@ SPEC.loader.exec_module(PACK)
 
 class CooperationCaptureTests(unittest.TestCase):
     def test_proposal_mode_has_exact_additive_node_only_inventory_and_module_closure(self):
-        self.assertEqual(len(PACK.SOURCES), 21)
-        self.assertEqual(len(PACK.PROPOSAL_SOURCES), 26)
-        self.assertEqual(len(set(PACK.PROPOSAL_SOURCES)), 26)
+        self.assertEqual(len(PACK.SOURCES), 22)
+        self.assertEqual(len(PACK.PROPOSAL_SOURCES), 27)
+        self.assertEqual(len(set(PACK.PROPOSAL_SOURCES)), 27)
         for name in PACK.PROPOSAL_SOURCES:
             if not name.endswith('.cjs'):
                 continue
@@ -57,7 +57,7 @@ class CooperationCaptureTests(unittest.TestCase):
             manifest = json.loads((output / 'INPUTS.json').read_text())
             self.assertEqual(set(manifest), {'version', 'kind', 'code_revision', 'node_version', 'files'})
             self.assertEqual(manifest['kind'], 'public-code-proposal-inputs')
-            self.assertEqual(result['files'], 28)
+            self.assertEqual(result['files'], 29)
             self.assertIs(result['actual_runtime_execution'], False)
             self.assertEqual({name for name in manifest['files'] if name.startswith('runtime/')},
                              {'runtime/node', 'runtime/node-LICENSE'})
@@ -115,7 +115,7 @@ class CooperationCaptureTests(unittest.TestCase):
             selected.assert_called_once_with('b' * 40)
             manifest = json.loads((output / 'INPUTS.json').read_text())
             self.assertEqual(result['manifest_sha256'], PACK.digest(output / 'INPUTS.json'))
-            self.assertEqual(result['files'], 25)
+            self.assertEqual(result['files'], 26)
             self.assertIs(result['actual_peer_execution'], False)
             for name, expected in manifest['files'].items():
                 actual = output / name

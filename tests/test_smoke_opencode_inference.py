@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """Small pure input/resource contracts, not a model, VM or runtime proof."""
+import ast
 import hashlib
 import importlib.util
 import io
@@ -10,7 +11,7 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/smoke_opencode_inference.py'
 SPEC = importlib.util.spec_from_file_location('opencode_inference_trial', SCRIPT)
@@ -19,6 +20,97 @@ SPEC.loader.exec_module(TRIAL)
 
 
 class Contracts(unittest.TestCase):
+    def test_native_guest_receipt_limit_is_bounded_without_widening_torch(self):
+        self.assertEqual(TRIAL.guest_receipt_limit(), 65536)
+        self.assertEqual(TRIAL.guest_receipt_limit('torch'), 65536)
+        self.assertEqual(TRIAL.guest_receipt_limit('llama_cpp_bf16_v1'), 256 * 1024)
+        for backend in (None, '', 'llama_cpp', 'other'):
+            with self.assertRaisesRegex(ValueError, 'unknown_inference_backend'):
+                TRIAL.guest_receipt_limit(backend)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'receipt.json'
+            # Padding is inert JSON whitespace, not a private payload or model.
+            path.write_bytes(b'{}' + b' ' * (256 * 1024 - 2))
+            self.assertEqual(TRIAL.load(path, TRIAL.guest_receipt_limit('llama_cpp_bf16_v1')), {})
+            with self.assertRaisesRegex(ValueError, 'report_bound'):
+                TRIAL.load(path, TRIAL.guest_receipt_limit('torch'))
+            path.write_bytes(path.read_bytes() + b' ')
+            with self.assertRaisesRegex(ValueError, 'report_bound'):
+                TRIAL.load(path, TRIAL.guest_receipt_limit('llama_cpp_bf16_v1'))
+        host = inspect.getsource(TRIAL.execute)
+        self.assertIn("load(args.output / 'guest-result.json', guest_receipt_limit(backend))", host)
+        self.assertIn('validate_backend_fields(result, profile)', host)
+        self.assertIn("require(executed.returncode == 0 and result.get('passed') is True, 'guest_trial_failed')", host)
+
+    def test_core_diagnostics_use_pinned_closed_collector_without_changing_task_authority(self):
+        guest = inspect.getsource(TRIAL.guest)
+        self.assertIn("private = module(SOURCE / 'tests/integration/agent-private-conversation.py'", guest)
+        self.assertEqual(guest.count('private.service_diagnostic('), 2)
+        final = guest.split('    finally:', 1)[1]
+        self.assertIn('private.service_diagnostic(', final)
+        self.assertIn("report['passed'] = report['phase'] == 'complete' and report['failure'] is None", final)
+        start = inspect.getsource(TRIAL.start)
+        self.assertIn('--setenv=RUST_LOG=off,volparossa::compute::private_diagnostic=debug', start)
+        self.assertNotIn('core_diagnostics', inspect.getsource(TRIAL.validate_task_selection))
+
+    def test_memory_collector_opt_in_is_native_only_at_both_existing_call_sites(self):
+        # Evaluate the two production call expressions without running a guest,
+        # loading a model or contacting any service. The second is in finally.
+        guest = ast.parse(inspect.getsource(TRIAL.guest))
+        calls = [node for node in ast.walk(guest) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == 'service_diagnostic']
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            for backend in ('torch', 'llama_cpp_bf16_v1'):
+                private = SimpleNamespace(service_diagnostic=Mock(return_value={'inert': True}))
+                result = eval(compile(ast.Expression(call), '<diagnostic-call>', 'eval'),
+                              {'private': private, 'backend': backend,
+                               'BASE': Path('/inert/private'), 'CORE_UNIT': 'inert-core'})
+                self.assertEqual(result, {'inert': True})
+                expected = {} if backend == 'torch' else {'memory_enabled': True}
+                private.service_diagnostic.assert_called_once_with(
+                    Path('/inert/private/inert-core.log'), **expected)
+
+    def test_task_arguments_preserve_torch_and_only_append_native_selection(self):
+        legacy = [str(TRIAL.INPUT / 'runtime/node'), str(TRIAL.INPUT / 'code/scripts/smoke_opencode_inference.cjs'),
+                  '--execute', '--yes', '--node', str(TRIAL.INPUT / 'runtime/node'), '--build-report',
+                  str(TRIAL.INPUT / 'runtime/build-report.json'), '--socket', str(TRIAL.BASE / 'private.sock'),
+                  '--project-parent', str(TRIAL.PROJECTS), '--output', str(TRIAL.BASE / 'task.json')]
+        self.assertEqual(TRIAL.task_arguments(), legacy)
+        self.assertEqual(TRIAL.task_arguments('torch'), legacy)
+        self.assertEqual(TRIAL.task_arguments('llama_cpp_bf16_v1'),
+                         legacy + ['--output-constraint', 'qwen_tagged_tool_json_v1'])
+        for backend in (None, 'unknown'):
+            with self.assertRaisesRegex(ValueError, 'unknown_inference_backend'):
+                TRIAL.task_arguments(backend)
+        guest = inspect.getsource(TRIAL.guest)
+        self.assertIn('start(TASK_UNIT, task_arguments(backend), 768 * 1024**2, 2550)', guest)
+        self.assertIn("native.require_output_constraint(report['native_build'], report['native_backend'])", guest)
+        host = inspect.getsource(TRIAL.execute)
+        self.assertIn("if backend != 'torch' and result.get('passed') is True:\n"
+                      "            validate_task_selection(result.get('task', {}), profile, backend)", host)
+        self.assertLess(host.index("validate_task_selection(result.get('task', {})"),
+                        host.index("receipt['actual_model_execution_proven'] = bool"))
+
+    def test_task_receipt_selection_binds_exact_version_without_relabeling_legacy(self):
+        legacy = {'version': 1, 'model_profile': TRIAL.LARGE_MODEL, 'passed': False}
+        selected = legacy | {'version': 2, 'output_constraint': TRIAL.OUTPUT_CONSTRAINT}
+        profile = TRIAL.trial_profile(TRIAL.LARGE_MODEL)
+        TRIAL.validate_task_selection(legacy, profile)
+        TRIAL.validate_task_selection(selected, profile, 'llama_cpp_bf16_v1')
+        self.assertEqual(legacy, {'version': 1, 'model_profile': TRIAL.LARGE_MODEL, 'passed': False})
+        self.assertFalse(selected['passed'])
+        for task, backend in ((legacy, 'llama_cpp_bf16_v1'), (selected, 'torch'),
+                (selected | {'output_constraint': None}, 'llama_cpp_bf16_v1'),
+                (selected | {'output_constraint': 'other'}, 'llama_cpp_bf16_v1'),
+                (legacy | {'version': True}, 'torch'),
+                (legacy | {'output_constraint': None}, 'torch')):
+            with self.subTest(task=task, backend=backend), \
+                    self.assertRaisesRegex(ValueError, 'task_output_constraint_mismatch'):
+                TRIAL.validate_task_selection(task, profile, backend)
+        with self.assertRaisesRegex(ValueError, 'task_model_mismatch'):
+            TRIAL.validate_task_selection(selected | {'model_profile': TRIAL.MODEL}, profile, 'llama_cpp_bf16_v1')
+
     def archive(self, root, name='code/example.cjs', *, payload=b'synthetic source\n', sha=None, link=False,
                 model_profile=TRIAL.MODEL, core_revision=None):
         manifest = dict(core_revision=core_revision or TRIAL.trial_profile(model_profile)['core_revision'], model_profile=model_profile,
@@ -47,7 +139,7 @@ class Contracts(unittest.TestCase):
 
     def test_profiles_are_closed_and_default_resources_are_unchanged(self):
         self.assertEqual(TRIAL.trial_profile(), dict(model_profile='qwen3-0.6b-v1',
-            core_revision='845cc84d0d0b766ab1c5227231dbf6c8eaeb8cc3', guest_memory_mib=6144,
+            core_revision='6a517b576baa17e7329661ee0476d1848081d114', guest_memory_mib=6144,
             core_memory_bytes=5 * TRIAL.GIB, qemu_memory_bytes=7 * TRIAL.GIB,
             host_available_bytes=8 * TRIAL.GIB, provision_budget_bytes=5 * TRIAL.GIB,
             scratch_gib=18, memory_failure='host_available_memory_below_8GiB'))
@@ -57,7 +149,10 @@ class Contracts(unittest.TestCase):
 
     def test_larger_profile_is_separate_and_requires_a_real_pin(self):
         self.assertRegex(TRIAL.LARGE_CORE, r'^[0-9a-f]{40}$')
-        self.assertNotEqual(TRIAL.LARGE_CORE, TRIAL.CORE)
+        # One reviewed core supports both profiles and the new negotiated error
+        # contract. Separate models/resources do not require artificial source forks.
+        self.assertEqual(TRIAL.LARGE_CORE, '6a517b576baa17e7329661ee0476d1848081d114')
+        self.assertNotEqual(TRIAL.LARGE_MODEL, TRIAL.MODEL)
         with patch.object(TRIAL, 'LARGE_CORE', None):
             with self.assertRaisesRegex(ValueError, 'larger_core_not_pinned'):
                 TRIAL.trial_profile(TRIAL.LARGE_MODEL)

@@ -11,7 +11,8 @@ const { startChatCompletionsProvider, toConversation } = require('../src/chat-co
 const { caps: legacyCaps, result: legacyResult, reply, fixture } = require('./conversation-fixture.cjs');
 
 // These are synthetic replies for the explicitly negotiated worker policy.
-const caps = model => ({ ...legacyCaps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'] });
+const caps = model => ({ ...legacyCaps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'],
+  execution_error_version: 1 });
 const result = (output, model) => ({ ...legacyResult(output, model), generation_policy: 'greedy_v1' });
 
 const MODEL = 'qwen3-0.6b-v1';
@@ -101,7 +102,8 @@ test('SDK stream shape releases actual text and token usage only after terminal 
     assert.equal(settled, false);
     assert.deepEqual(f.provider.observations, { submitted: 1, completed: 0, incomplete: 0, cleanup_confirmed: 0 });
     assert.deepEqual(f.requests.map(row => row.operation.type), ['conversation_capabilities', 'submit_conversation']);
-    assert.deepEqual(f.requests[0].operation, { type: 'conversation_capabilities', generation_policy_version: 1 });
+    assert.deepEqual(f.requests[0].operation, { type: 'conversation_capabilities', generation_policy_version: 1,
+      execution_error_version: 1 });
     const input = f.requests[1].operation.conversation;
     assert.equal(input.generation_policy, 'greedy_v1');
     assert.equal(input.visibility, 'private_local');
@@ -306,6 +308,39 @@ test('transient core failures keep their retryable status without claiming a com
       assert.equal(f.provider.diagnostics.summary.incomplete, 0);
       assert.equal(f.provider.diagnostics.summary.request_errors[code], 1);
       assert.equal(f.provider.observations.cleanup_confirmed, code === 'execution_failed' ? 1 : 0);
+    } finally { await f.provider.close(); }
+  }
+});
+
+test('negotiated admitted budget exhaustion is cleanup-confirmed HTTP422, never a completed model result', async t => {
+  const f = await start(t, (socket, message) => {
+    reply(socket, message, 'admitted');
+    reply(socket, message, 'error', {code: 'execution_budget_exceeded'});
+  }, true);
+  try {
+    const response = await send(f.provider, request());
+    assert.equal(response.status, 422);
+    assert.equal(JSON.parse(response.body).error.code, 'execution_budget_exceeded');
+    assert.deepEqual(f.requests[0].operation, {type: 'conversation_capabilities', generation_policy_version: 1,
+      execution_error_version: 1});
+    assert.equal(f.provider.diagnostics.summary.request_errors.execution_budget_exceeded, 1);
+    assert.deepEqual(f.provider.observations, {submitted: 1, completed: 0, incomplete: 0, cleanup_confirmed: 1});
+    assert.deepEqual(f.provider.diagnostics.records, []);
+  } finally { await f.provider.close(); }
+});
+
+test('budget code before admission or under another correlation is not a cleanup receipt', async t => {
+  for (const mode of ['unadmitted', 'wrong-id']) {
+    const f = await start(t, (socket, message) => {
+      if (mode === 'wrong-id') reply(socket, message, 'admitted');
+      reply(socket, mode === 'wrong-id' ? {...message, id: 'f'.repeat(32)} : message,
+        'error', {code: 'execution_budget_exceeded'});
+    }, true);
+    try {
+      const response = await send(f.provider, request());
+      assert.notEqual(response.status, 422);
+      assert.equal(f.provider.observations.cleanup_confirmed, 0);
+      assert.equal(f.provider.diagnostics.summary.request_errors.execution_budget_exceeded, 0);
     } finally { await f.provider.close(); }
   }
 });

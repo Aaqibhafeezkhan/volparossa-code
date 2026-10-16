@@ -19,8 +19,10 @@ function fixture(Task, receive, options = {}) {
     observations: options.observations ?? {submitted: 0, cleanup_confirmed: 0},
     async close() { observed.push('provider-close'); if (options.badCleanup) throw Error('private detail'); }};
   const hooks = {Task, preflight: async () => options.capabilities ??
-    {...caps(options.model ?? DEFAULT_MODEL), generation_policy_version: 1, generation_policies: ['greedy_v1']},
-    provider: async value => { binding.provider = value.model; return provider; },
+    {...caps(options.model ?? DEFAULT_MODEL), generation_policy_version: 1, generation_policies: ['greedy_v1'],
+      execution_error_version: 1},
+    provider: async value => { binding.provider = value.model; binding.outputConstraint = value.outputConstraint;
+      binding.nativeSession = value.nativeSession; return provider; },
     prepare(cooperative) { assert.equal(cooperative, options.cooperative ?? false); },
     cooperative: () => options.cooperative ?? false, port: async () => 1235, approvalMs: 15,
     spawn(binary, args, config) {
@@ -47,9 +49,28 @@ function fixture(Task, receive, options = {}) {
     }
     else receive(value, input);
   }, () => assert.fail('owner frame'));
-  return {observed, input, binding, done: runSession({input, output, events}, hooks).finally(unbind)};
+  return {observed, input, binding, done: runSession({input, output, events,
+    outputConstraint: options.outputConstraint}, hooks).finally(unbind)};
 }
 const result = {text: 'Fixture only', commands: 0, nativeTurnCompleted: true, taskVerified: false};
+test('explicit constraint is negotiated before runtime startup and bound to the provider', async () => {
+  const selected = 'qwen_tagged_tool_json_v1', model = 'qwen3-4b-instruct-2507-v1';
+  class Task { async run() { return result; } }
+  const capabilities = {...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'],
+    execution_error_version: 1, inference_backend: 'llama_cpp_bf16_v1', required_generation_policy: 'greedy_v1',
+    output_constraint_version: 1, output_constraints: [selected]};
+  const f = fixture(Task, (_value, input) => input.end(), {model, capabilities, outputConstraint: selected});
+  assert.equal(await f.done, 0);
+  assert.equal(f.binding.outputConstraint, selected);
+  assert.equal(f.binding.nativeSession, true);
+  assert.deepEqual(f.observed, ['ready', 'provider-close', 'result', 'client-close', 'SIGTERM']);
+  for (const output_constraints of [[], undefined]) {
+    const rejected = fixture(Task, (_value, input) => input.end(), {model, outputConstraint: selected,
+      capabilities: {...capabilities, output_constraints}});
+    assert.equal(await rejected.done, 1);
+    assert.equal(rejected.binding.provider, undefined);
+  }
+});
 test('owner connects pinned runtime, forwards exact approvals and waits for core/process cleanup', async () => {
   class Task {
     constructor(_client, approve) { this.approve = approve; }
@@ -85,10 +106,11 @@ test('owner-selected validated 4B core binds provider, native catalog and task b
 test('incompatible, widened or quarantined core fails before provider or native startup', async () => {
   const model = 'qwen3-4b-instruct-2507-v1';
   for (const changed of [{quarantined: true}, {local_only: false}, {max_prompt_tokens: 262144},
-    {generation_policies: []}, {model_profile: 'unreviewed-model'}]) {
+    {generation_policies: []}, {execution_error_version: undefined}, {execution_error_version: 2},
+    {model_profile: 'unreviewed-model'}]) {
     class Task { constructor() { assert.fail('must not create task'); } }
     const f = fixture(Task, () => assert.fail('must not signal ready'), {capabilities: {
-      ...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'], ...changed,
+      ...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'], execution_error_version: 1, ...changed,
     }});
     assert.equal(await f.done, 1);
     assert.deepEqual(f.binding, {}); assert.deepEqual(f.observed, []);
@@ -124,7 +146,7 @@ test('owner cleanup accepts an actual provider retry after a correlated reaped f
     reply(socket, request, 'admitted');
     if (++attempts === 1) reply(socket, request, 'error', {code: 'execution_failed'});
     else reply(socket, request, 'result', {result: coreResult(undefined, model)});
-  }, {...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1']});
+  }, {...caps(model), generation_policy_version: 1, generation_policies: ['greedy_v1'], execution_error_version: 1});
   const provider = await startChatCompletionsProvider({socketPath: core.socketPath, model, diagnostics: true});
   class Task {
     async run() {

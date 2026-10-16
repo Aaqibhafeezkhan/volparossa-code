@@ -6,9 +6,26 @@ const assert = require('node:assert/strict');
 const {spawn} = require('node:child_process');
 const {PassThrough, Writable} = require('node:stream');
 const {configuration, ownedOpenCode} = require('../src/opencode-runtime.cjs');
-const {readFrames, writeFrame, emptyProviderDiagnostic, emptyTaskDiagnostic} = require('../src/opencode-bridge.cjs');
+const {readFrames, writeFrame, emptyProviderDiagnostic, emptyTaskDiagnostic,
+  validProviderDiagnostic} = require('../src/opencode-bridge.cjs');
 const READY = {type: 'ready', version: 1, execution: 'private_local', confidentialRemoteAvailable: false};
 const RESULT = {text: 'Synthetic answer.', commands: 1, nativeTurnCompleted: true, taskVerified: false};
+test('provider counter schema accepts exact historical receipts and the new bounded terminal code', () => {
+  const current = emptyProviderDiagnostic();
+  current.request_errors.execution_budget_exceeded = 1;
+  assert.equal(validProviderDiagnostic(current), true);
+  const old = structuredClone(current);
+  delete old.request_errors.execution_budget_exceeded;
+  assert.equal(validProviderDiagnostic(old), true);
+  assert.equal(Object.hasOwn(old.request_errors, 'execution_budget_exceeded'), false);
+  for (const changed of [true, -1, 65536, 'PRIVATE_CANARY']) {
+    const invalid = structuredClone(current);
+    invalid.request_errors.execution_budget_exceeded = changed;
+    assert.equal(validProviderDiagnostic(invalid), false);
+  }
+  old.request_errors.private_detail = 'PRIVATE_CANARY';
+  assert.equal(validProviderDiagnostic(old), false);
+});
 function child(t, program) {
   const process = spawn(require('node:process').execPath, ['-e', program], {stdio: ['pipe', 'pipe', 'pipe'],
     env: {PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', ELECTRON_RUN_AS_NODE: '1'}});
@@ -26,6 +43,11 @@ test('OpenCode runtime config accepts only exact explicit pinned inputs', () => 
   const config = {version: 1, opencode: '/fixture/opencode', opencodeSha256: 'a'.repeat(64),
     buildReport: '/fixture/BUILD_REPORT.json', node: '/fixture/node', nodeSha256: 'b'.repeat(64), socketPath: '/fixture/private/core.sock'};
   assert.deepEqual(configuration(config, '/fixture/project'), config);
+  const constrained = {...config, outputConstraint: 'qwen_tagged_tool_json_v1'};
+  assert.deepEqual(configuration(constrained, '/fixture/project'), constrained);
+  for (const outputConstraint of [null, undefined, false, 'grammar']) {
+    assert.throws(() => configuration({...config, outputConstraint}, '/fixture/project'), /opencode_runtime/);
+  }
   for (const changed of [{...config, appServer: '/fixture/codex'}, {...config, opencodeSha256: 'bad'},
     {...config, socketPath: 'relative'}, {...config, version: 2}]) {
     assert.throws(() => configuration(changed, '/fixture/project'), /opencode_runtime/);
