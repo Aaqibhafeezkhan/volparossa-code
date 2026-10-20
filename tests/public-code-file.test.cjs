@@ -9,6 +9,22 @@ const path = require('node:path');
 const {createHash} = require('node:crypto');
 const {capturePublicCodeFile, applyPublicCodeFile} = require('../src/public-code-file.cjs');
 const {fixture: publicCore, INPUT, updateReport} = require('./public-code-fixture.cjs');
+function readFixtureBytes(file) {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const info = fs.fstatSync(fd);
+    assert.ok(info.isFile() && info.uid === process.getuid() && info.size <= 65536);
+    const bytes = Buffer.alloc(info.size + 1); let size = 0;
+    while (size < bytes.length) {
+      const count = fs.readSync(fd, bytes, size, bytes.length - size, size);
+      if (count === 0) break;
+      size += count;
+    }
+    const after = fs.fstatSync(fd);
+    assert.ok(size === info.size && ['size', 'mtimeMs', 'mode', 'uid', 'gid'].every(key => info[key] === after[key]));
+    return bytes.subarray(0, size);
+  } finally { fs.closeSync(fd); }
+}
 function fixture(t) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'vp-public-file-'));
   const file = path.join(workspace, 'selected.js');
@@ -66,7 +82,7 @@ test('approved exact raw replacement changes only selected file after validated 
   const applied = await f.apply({approve: value => {edit = value; return true;}});
   assert.equal(applied.applied, true);
   assert.equal(fs.readFileSync(f.file, 'utf8'), 'export const value = 2;\n');
-  assert.equal(fs.readFileSync(tests, 'utf8'), 'original independent test bytes');
+  assert.equal(readFixtureBytes(tests).toString('utf8'), 'original independent test bytes');
   assert.notEqual(fs.statSync(f.file).ino, oldIdentity); // No write through old inode.
   assert.equal(fs.statSync(f.file).mode & 0o777, 0o600);
   assert.equal(edit.replacement, 'export const value = 2;\n');

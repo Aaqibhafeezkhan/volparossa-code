@@ -2,6 +2,7 @@
 // Disposable guest only. Real CDP keyboard/mouse input, never a VS Code API shim.
 'use strict';
 const fs = require('node:fs/promises');
+const {constants} = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const {spawnSync} = require('node:child_process');
@@ -58,11 +59,23 @@ async function privateDirectory(value) {
     (info.mode & 0o7777) === 0o700, 'project_scope');
 }
 
+const checkFixture = value => demand(value, 'fixture_failed');
 async function fixtureFile(project, name, max = 65536) {
-  const file = path.join(project, name), info = await fs.lstat(file);
-  demand(info.isFile() && !info.isSymbolicLink() && info.nlink === 1 && info.uid === process.getuid() &&
-    info.size <= max && !(info.mode & 0o022), 'fixture_failed');
-  return fs.readFile(file);
+  const file = path.join(project, name);
+  const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    checkFixture(info.isFile() && info.nlink === 1 && info.uid === process.getuid() && info.size <= max && !(info.mode & 0o022));
+    const bytes = Buffer.alloc(info.size + 1); let size = 0;
+    while (size < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, size, bytes.length - size, size);
+      if (bytesRead === 0) break;
+      size += bytesRead;
+    }
+    const after = await handle.stat();
+    checkFixture(size === info.size && ['size', 'mtimeMs', 'mode', 'uid', 'gid'].every(key => info[key] === after[key]));
+    return bytes.subarray(0, size);
+  } finally { await handle.close(); }
 }
 
 function journal(bytes) {

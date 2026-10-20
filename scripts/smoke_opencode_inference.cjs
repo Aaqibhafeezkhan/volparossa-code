@@ -3,6 +3,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const {constants} = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const {createHash} = require('node:crypto');
@@ -81,9 +82,22 @@ async function owned(file, directory = false) {
   return info;
 }
 async function contents(project, name, maximum = 8192) {
-  const target = path.join(project, name), info = await owned(target);
-  assert.ok(info.size > 0 && info.size <= maximum);
-  return fs.readFile(target);
+  const target = path.join(project, name);
+  assert.equal(await fs.realpath(target), target);
+  const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    assert.ok(info.isFile() && info.uid === process.getuid() && (info.mode & 0o6022) === 0 && info.size > 0 && info.size <= maximum);
+    const bytes = Buffer.alloc(info.size + 1); let size = 0;
+    while (size < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, size, bytes.length - size, size);
+      if (bytesRead === 0) break;
+      size += bytesRead;
+    }
+    const after = await handle.stat();
+    assert.ok(size === info.size && ['size', 'mtimeMs', 'mode', 'uid', 'gid'].every(key => info[key] === after[key]));
+    return bytes.subarray(0, size);
+  } finally { await handle.close(); }
 }
 
 function createTrialVerifier(project, createVerifier = createWorkspaceVerifier) {

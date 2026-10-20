@@ -249,11 +249,12 @@ sudo() { return 99; }
                      "if report['units_empty'] and report['provision_group_joined']:"):
             self.assertIn(text, source)
         task_driver = (ROOT / 'scripts/smoke_opencode_inference.cjs').read_bytes()
-        # Exact source with opt-in output selection, usable in a shallow checkout.
+        # Exact source with opt-in output selection and descriptor-bound fixture reads.
+        # The reviewed delta changes only contents() and its fs.constants import.
         # Focused JS tests retain the original prompt, approvals and round bounds;
         # no regenerated answers or claim of model quality.
         self.assertEqual(hashlib.sha256(task_driver).hexdigest(),
-                         '92ca6da4a1cff07f07fd9e56afe28f853c2868f7d111c6cdc5350145bb54cba0')
+                         '0f395f215d11b3ebc868299a7695908511724778b72d2966b9669ccaf20ccf13')
 
     def test_native_memory_requires_actual_zero_swap_and_oom_not_just_limits(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(TRIAL, 'cgroup', return_value=Path(temp)):
