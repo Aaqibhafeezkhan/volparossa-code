@@ -2,12 +2,19 @@
 
 # Project VOLPAROSSA Code
 
-**OpenCode tools. VOLPAROSSA intelligence. Cooperative development.**
+**Give a coding task a team, without making one device the limit.**
 
-VOLPAROSSA Code connects the open-source **OpenCode** coding runtime to the
-VOLPAROSSA core. The goal is a network-native assistant that can read, change
-and check code, distribute useful work, combine agent results and improve its
-working methods—without making the power of one device the limit.
+Reading an unfamiliar project, proposing a change and checking it belong in one
+workflow. VOLPAROSSA Code connects the open-source **OpenCode** coding runtime
+to the [VOLPAROSSA core](https://github.com/VOLPAROSSA/volparossa), with explicit
+workspace permissions and reviewable edits. The goal is to share suitable work
+and combine agent results across the network, including protected private work.
+
+A bounded [read/edit/test task](docs/OPENCODE.md#explicit-native-cpu-candidate)
+already passes with a real local model on a public fixture, taking about 37 minutes
+on the disposable CPU runner. Confidential peer coding remains unfinished.
+Contribute to the executable loop, editor integration or measured coding quality
+to help move that larger goal beyond a demonstration.
 
 OpenCode replaces the earlier Codex CLI/app-server foundation. Suitable upstream
 apps, clients and editor integrations can share the same core connection. The
