@@ -1,6 +1,6 @@
 ![Project VOLPAROSSA Code — botanical illustration of a flowering plant with circuit-like roots on parchment](docs/assets/volparossa-code-banner.png)
 
-# Project VOLPAROSSA Code
+# VOLPAROSSA Code
 
 **Give a coding task a team, without making one device the limit.**
 
