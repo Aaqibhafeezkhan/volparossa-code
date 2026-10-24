@@ -16,7 +16,7 @@ async function fixture(t, handler = () => false, options = {}) {
     if (await handler(req, res, item)) return;
     if (item.path === '/event') {
       res.writeHead(200, {'content-type': 'text/event-stream'}); streams.push(res);
-      res.write('event: message\r\ndata: {"type":"server.connected","properties":{}}\r\n\r\n'); return;
+      res.write('event: message\\r\\ndata: {"type":"server.connected","properties":{}}\\r\\n\\r\\n'); return;
     }
     res.writeHead(200, {'content-type': 'application/json'});
     res.end(JSON.stringify(item.path === '/global/health' ? {healthy: true, version: '1.18.34'} : true));
@@ -31,7 +31,7 @@ test('pinned health, scoped authenticated HTTP, and actual SSE framing', async t
   const {client, seen, streams} = await fixture(t);
   await client.connect();
   const received = once(client, 'event');
-  const bytes = Buffer.from('data: {"type":"message.part.delta","properties":{"delta":"café"}}\n\n');
+  const bytes = Buffer.from('data: {"type":"message.part.delta","properties":{"delta":"café"}}\\n\\n');
   const split = bytes.indexOf(Buffer.from('é')) + 1;
   streams[0].write(bytes.subarray(0, split)); streams[0].write(bytes.subarray(split));
   assert.equal((await received)[0].properties.delta, 'café');
@@ -73,7 +73,7 @@ test('JSON bounds, redirect rejection, prompt cancellation do not follow externa
   abort.abort(); await assert.rejects(pending, /cancelled/);
 });
 test('invalid and oversized SSE close the client', async t => {
-  for (const frame of ['data: not-json\n\n', 'data: ' + 'x'.repeat(MAX_BODY + 1)]) {
+  for (const frame of ['data: not-json\\n\\n', 'data: ' + 'x'.repeat(MAX_BODY + 1)]) {
     const {client, streams} = await fixture(t); await client.connect();
     const closed = once(client, 'closed'); streams[0].write(frame); await closed; assert.equal(client.closed, true);
   }
@@ -85,4 +85,56 @@ test('session permission follows owner-supplied cooperative capability, not the 
     const permission = seen.at(-1).body.permission.find(rule => rule.permission === 'volparossa_delegate_public');
     assert.equal(permission?.action, cooperative ? 'allow' : undefined);
   }
+});
+test('SSE CRLF delimiters split across writes still dispatch the event', async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  const received = once(client, 'event');
+  const frame = 'data: {"type":"message.part.delta","properties":{"delta":"split-crlf"}}';
+  streams[0].write(frame + '\\r');
+  streams[0].write('\\n\\r');
+  streams[0].write('\\n');
+  assert.equal((await received)[0].properties.delta, 'split-crlf');
+});
+test('multiple SSE events and comments in one write dispatch once in order', async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  const received = [];
+  const onEvent = event => {
+    received.push(event);
+    if (received.length === 2) client.removeListener('event', onEvent);
+  };
+  client.on('event', onEvent);
+  streams[0].write([
+    ': keepalive',
+    'data: {"type":"message.part.delta","properties":{"delta":"first"}}',
+    '',
+    ': another comment',
+    'data: {"type":"message.part.delta","properties":{"delta":"second"}}',
+    '',
+  ].join('\\n') + '\\n');
+  await new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => reject(new Error('timed out waiting for SSE events')), 500);
+    const check = () => {
+      if (received.length === 2) { clearTimeout(deadline); resolve(); }
+      else setImmediate(check);
+    };
+    check();
+  });
+  assert.deepEqual(received.map(event => event.properties.delta), ['first', 'second']);
+});
+test('malformed UTF-8 in an SSE data line closes the client without emitting an event', async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  let emitted = false;
+  client.on('event', () => { emitted = true; });
+  const closed = once(client, 'closed');
+  streams[0].write(Buffer.concat([
+    Buffer.from('data: {"type":"message.part.delta","properties":{"delta":"'),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from('"}}\\n\\n'),
+  ]));
+  await closed;
+  assert.equal(client.closed, true);
+  assert.equal(emitted, false);
 });
