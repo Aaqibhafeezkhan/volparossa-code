@@ -22,7 +22,7 @@ async function fixture(t, handler = () => false, options = {}) {
     res.end(JSON.stringify(item.path === '/global/health' ? {healthy: true, version: '1.18.34'} : true));
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const client = new OpenCodeClient({baseUrl: `http://127.0.0.1:${server.address().port}`, password: PASSWORD,
+  const client = new OpenCodeClient({baseUrl: 'http://127.0.0.1:' + server.address().port, password: PASSWORD,
     timeoutMs: 1000, ...options});
   t.after(() => { client.close(); for (const stream of streams) stream.destroy(); server.closeAllConnections(); server.close(); });
   return {client, seen, streams};
@@ -38,7 +38,7 @@ test('pinned health, scoped authenticated HTTP, and actual SSE framing', async t
   await client.createSession({model: 'qwen3-0.6b-v1'});
   await client.replyPermission('per_fixture', true); await client.replyPermission('per_other', false);
   assert.ok(seen.every(item => item.directory === '/workspace' && item.auth ===
-    `Basic ${Buffer.from(`opencode:${PASSWORD}`).toString('base64')}`));
+    'Basic ' + Buffer.from('opencode:' + PASSWORD).toString('base64')));
   assert.equal(seen[2].body.model.providerID, 'volparossa');
   assert.deepEqual(seen.slice(3).map(item => item.body), [{reply: 'once'}, {reply: 'reject'}]);
   assert.ok(seen[2].body.permission.some(rule => rule.permission === '*' && rule.action === 'deny'));
@@ -85,4 +85,79 @@ test('session permission follows owner-supplied cooperative capability, not the 
     const permission = seen.at(-1).body.permission.find(rule => rule.permission === 'volparossa_delegate_public');
     assert.equal(permission?.action, cooperative ? 'allow' : undefined);
   }
+});
+test('SSE CRLF delimiters split across observed response chunks still dispatch the event', async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  const received = once(client, 'event');
+  const frame = 'data: {"type":"message.part.delta","properties":{"delta":"split-crlf"}}';
+  const response = client.eventResponse;
+  const writeAndObserve = async segment => {
+    const observed = new Promise((resolve, reject) => {
+      let chunks = [], length = 0;
+      const onData = chunk => {
+        chunks.push(Buffer.from(chunk));
+        length += chunk.length;
+        if (length >= Buffer.byteLength(segment)) {
+          response.off('data', onData);
+          resolve(Buffer.concat(chunks));
+        }
+      };
+      response.on('data', onData);
+      response.once('error', reject);
+    });
+    streams[0].write(segment);
+    assert.equal((await observed).toString(), segment);
+  };
+  await writeAndObserve(frame + '\r');
+  await writeAndObserve('\n\r');
+  await writeAndObserve('\n');
+  assert.equal((await received)[0].properties.delta, 'split-crlf');
+});
+test('multiple SSE events and comments in one write dispatch once in order', async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  const received = [];
+  await new Promise((resolve, reject) => {
+    let quietTimer;
+    const deadlineTimer = setTimeout(() => finish(new Error('timed out waiting for SSE events')), 500);
+    const finish = error => {
+      clearTimeout(deadlineTimer);
+      clearTimeout(quietTimer);
+      client.off('event', onEvent);
+      error ? reject(error) : resolve();
+    };
+    const onEvent = event => {
+      received.push(event);
+      if (received.length >= 2) {
+        clearTimeout(quietTimer);
+        quietTimer = setTimeout(() => finish(), 50);
+      }
+    };
+    client.on('event', onEvent);
+    streams[0].write([
+      ': keepalive',
+      'data: {"type":"message.part.delta","properties":{"delta":"first"}}',
+      '',
+      ': another comment',
+      'data: {"type":"message.part.delta","properties":{"delta":"second"}}',
+      '',
+    ].join('\n') + '\n');
+  });
+  assert.deepEqual(received.map(event => event.properties.delta), ['first', 'second']);
+});
+test('malformed UTF-8 in an SSE data line closes the client without emitting an event', async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  let emitted = false;
+  client.on('event', () => { emitted = true; });
+  const closed = once(client, 'closed');
+  streams[0].write(Buffer.concat([
+    Buffer.from('data: {"type":"message.part.delta","properties":{"delta":"'),
+    Buffer.from([0xc3, 0x28]),
+    Buffer.from('"}}\n\n'),
+  ]));
+  await closed;
+  assert.equal(client.closed, true);
+  assert.equal(emitted, false);
 });
