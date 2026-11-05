@@ -1,14 +1,22 @@
-# VOLPAROSSA maintenance: changes are proposed, never auto-merged.
+# Propose related compatible updates together; every group still needs review.
+# Major upgrades remain individual; existing security-update policies stay separate.
 version: 2
 updates:
-- package-ecosystem: github-actions
-  directory: /
-  schedule:
-    interval: weekly
-    day: monday
-  open-pull-requests-limit: 3
-  groups:
-    volparossa-security:
-      applies-to: security-updates
-      patterns:
-      - '*'
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      actions-compatible:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      volparossa-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
