@@ -161,3 +161,58 @@ test('malformed UTF-8 in an SSE data line closes the client without emitting an 
   assert.equal(client.closed, true);
   assert.equal(emitted, false);
 });
+test('truncated SSE event on normal end-of-stream is discarded and the client closes', {timeout: 1000}, async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  let emitted = false;
+  client.on('event', () => { emitted = true; });
+  const closed = once(client, 'closed');
+  streams[0].write('data: {"type":"message.part.delta","properties":{"delta":"truncated"}}\r\n');
+  streams[0].end();
+  await closed;
+  assert.equal(client.closed, true);
+  assert.equal(client.ready, false);
+  assert.equal(emitted, false);
+});
+test('complete SSE event is emitted once before a truncated event at end-of-stream', {timeout: 1000}, async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  const received = [];
+  client.on('event', event => received.push(event));
+  const closed = once(client, 'closed');
+  streams[0].write('data: {"type":"message.part.delta","properties":{"delta":"complete"}}\r\n\r\n');
+  streams[0].write('data: {"type":"message.part.delta","properties":{"delta":"truncated"}}\r\n');
+  streams[0].end();
+  await closed;
+  assert.equal(client.closed, true);
+  assert.deepEqual(received.map(event => event.properties.delta), ['complete']);
+});
+test('truncated SSE event on abrupt disconnect is discarded and the client closes', {timeout: 1000}, async t => {
+  const {client, streams} = await fixture(t);
+  await client.connect();
+  let emitted = false;
+  client.on('event', () => { emitted = true; });
+  const closed = once(client, 'closed');
+  const partial = 'data: {"type":"message.part.delta","properties":{"delta":"truncated"}}\r\n';
+  const received = new Promise(resolve => {
+    const chunks = [];
+    let size = 0;
+    const onData = chunk => {
+      chunks.push(chunk); size += chunk.length;
+      if (size >= Buffer.byteLength(partial)) {
+        client.eventResponse.off('data', onData);
+        resolve(Buffer.concat(chunks));
+      }
+    };
+    client.eventResponse.on('data', onData);
+  });
+  streams[0].write(partial);
+  assert.equal((await received).toString(), partial);
+  assert.equal(client.closed, false);
+  assert.equal(emitted, false);
+  streams[0].destroy();
+  await closed;
+  assert.equal(client.closed, true);
+  assert.equal(client.ready, false);
+  assert.equal(emitted, false);
+});
