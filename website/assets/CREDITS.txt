@@ -8,7 +8,7 @@ dimensions and SHA-256 records in website/masters and website/asset-manifest.jso
 
 Original VOLPAROSSA emblem and shared theme:
 VOLPAROSSA/volparossa.github.io, commit
-8cdbbf675dc83d14bb9490b5222b36c10c5670c2, design version 1.0.3.
+991cf1638c906226574b9c21bb32c6618fc07fb7, design version 1.1.0.
 The original website/integration GPL-3.0-only license is retained at ../LICENSE.
 
 OpenCode: original mark and actual upstream terminal interface example.

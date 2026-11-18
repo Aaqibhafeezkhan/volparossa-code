@@ -4,7 +4,7 @@
   "canonical": "https://volparossa.org/volparossa-code/",
   "repository": "https://github.com/VOLPAROSSA/volparossa-code",
   "documentation": "https://volparossa.org/docs/#applications",
-  "theme_commit": "8cdbbf675dc83d14bb9490b5222b36c10c5670c2",
+  "theme_commit": "991cf1638c906226574b9c21bb32c6618fc07fb7",
   "code_commit": "ce2524532f30fc74dff02d384424f4293ed457d5",
   "local_evidence": "https://github.com/VOLPAROSSA/volparossa-code/blob/main/docs/OPENCODE.md#explicit-native-cpu-candidate",
   "peer_evidence": "https://github.com/VOLPAROSSA/volparossa-code/blob/main/docs/OPENCODE.md#explicit-public-single-file-proposals-candidate",
