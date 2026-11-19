@@ -690,6 +690,7 @@ def guest(args):
             created.append(NATIVE_UNIT)
             report['native_build'] = run_native_build(profile['core_memory_bytes'], report)
             if manifest.get('frontend') == 'vscodium':
+                args.editor_guest_report = report
                 report['phase'] = 'editor-provision'
                 editor = module(INPUT / 'code/scripts/opencode_editor.py', 'opencode_editor_inputs')
                 with (BASE / 'packages.log').open('ab') as log:
@@ -1232,6 +1233,9 @@ def main():
     if args.mode == 'pack':
         pack(args)
     elif args.mode == 'guest':
+        editor = INPUT / 'code/scripts/opencode_editor.py'
+        if editor.is_file():
+            return module(editor, 'editor_guest_result').guest_result(guest, args, record)
         return guest(args)
     elif args.mode == 'execute':
         return execute(args)

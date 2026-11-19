@@ -9,6 +9,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import traceback
 import sys
 from urllib.request import urlopen
 
@@ -66,6 +67,36 @@ def provision():
     return {'package_sha256': DEB_SHA, 'binary_sha256': BINARY_SHA, 'source_commit': SOURCE, 'version': RELEASE}
 
 
+def failure_details(error):
+    # Only closed error types, errno, and reviewed source locations. Never format
+    # the exception, command, stderr, prompts, or an arbitrary filesystem path.
+    stack = []
+    allowed = {'opencode_editor.py', 'smoke_opencode_inference.py', 'opencode_task_holder.py', 'shutil.py'}
+    for entry in traceback.extract_tb(error.__traceback__)[-8:]:
+        name = Path(entry.filename).name
+        if name in allowed:
+            stack.append([name, entry.lineno])
+    kind = type(error).__name__
+    return {'class': kind if kind in ('OSError', 'PermissionError', 'FileNotFoundError', 'ValueError',
+                'KeyError', 'TimeoutExpired', 'CalledProcessError', 'TypeError', 'RuntimeError') else 'other',
+            'errno': error.errno if isinstance(error, OSError) and type(error.errno) is int else None,
+            'process_status': error.returncode if isinstance(error, subprocess.CalledProcessError) else None,
+            'locations': stack}
+
+
+def guest_result(guest, args, write):
+    try:
+        return guest(args)
+    except Exception as error:
+        output = Path('/home/vpci/opencode-result.json')
+        report = getattr(args, 'editor_guest_report', None)
+        if report is None or output.exists():
+            raise
+        report.update(passed=False, failure='guest_finalization_failed', finalization_exception=failure_details(error))
+        write(output, report)
+        return 1
+
+
 def service_properties():
     # systemd builds this mount namespace before dropping to vpci. Real root
     # ownership of /usr survives, as required by the production owner verifier.
@@ -85,7 +116,7 @@ def service_properties():
     socket_path.touch(mode=0o600, exist_ok=False)
     read_only = ['/usr', '/etc/passwd', '/etc/group', '/etc/ld.so.cache', '/etc/fonts',
                  str(EDITOR), str(CODE), str(INPUT / 'runtime'), str(BASE / 'private.sock') + ':' + str(socket_path)]
-    return ['--property=RootDirectory=' + str(root), '--property=MountAPIVFS=yes', '--property=PrivateDevices=yes',
+    return ['--property=RootDirectory=' + str(root), '--property=RootEphemeral=yes', '--property=MountAPIVFS=yes', '--property=PrivateDevices=yes',
             '--property=CapabilityBoundingSet=', '--property=ProtectProc=invisible', '--property=ProtectSystem=strict',
             '--property=ProtectKernelTunables=yes', '--property=ProtectControlGroups=yes',
             '--property=TemporaryFileSystem=/tmp:mode=1777', '--property=BindReadOnlyPaths=' + ' '.join(read_only),
@@ -98,6 +129,12 @@ def inside():
     require(int(next(v.split()[1] for v in Path('/proc/self/status').read_text().splitlines()
                      if v.startswith('CapEff:')), 16) == 0, 'editor_capabilities')
     interpreter = Path('/usr/bin/python3').resolve()
+    observed = {'interpreter_root_owned': interpreter.stat().st_uid == 0,
+                'system_runtime_read_only': bool(os.statvfs('/usr').f_flag & os.ST_RDONLY),
+                'core_socket_mounted': (UI.parent / 'private.sock').is_socket(),
+                'model_files_hidden': not (BASE / 'ml').exists(), 'core_source_hidden': not Path('/home/vpci/source').exists(),
+                'guest_ssh_hidden': not Path('/home/vpci/.ssh').exists()}
+    (UI / 'mounts.json').write_text(json.dumps(observed))
     require(interpreter.stat().st_uid == 0 and os.statvfs('/usr').f_flag & os.ST_RDONLY
             and (UI.parent / 'private.sock').is_socket() and not (BASE / 'ml').exists()
             and not Path('/home/vpci/source').exists() and not Path('/home/vpci/.ssh').exists(), 'editor_mounts')
@@ -151,6 +188,9 @@ def run():
         home.mkdir(mode=0o700)
         completed = subprocess.run([sys.executable, '-B', __file__, 'inside'], cwd=UI,
                                    env={**ENV, 'HOME': str(home)}, timeout=2530, check=False)
+        mounts = UI / 'mounts.json'
+        if mounts.is_file():
+            receipt['isolation'] = json.loads(mounts.read_text())
         rendered = UI / 'rendered.json'
         if rendered.is_file():
             require(rendered.stat().st_size <= 8192, 'editor_receipt')
@@ -161,8 +201,9 @@ def run():
         receipt['phase'] = 'independent-check'
         data = subprocess.check_output([NODE, DRIVER, '--fixture', 'verify'], env=ENV, timeout=25)
         receipt.update(json.loads(data), independent_test_passed=True, phase='complete')
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         receipt['failure'] = 'stage_failed'
+        receipt['exception'] = failure_details(error)
     finally:
         shutil.rmtree(UI)
         receipt['project_removed'] = not UI.exists()
