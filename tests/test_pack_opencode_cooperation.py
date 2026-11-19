@@ -21,12 +21,16 @@ class CooperationCaptureTests(unittest.TestCase):
         self.assertEqual(len(PACK.SOURCES), 22)
         self.assertEqual(len(PACK.PROPOSAL_SOURCES), 27)
         self.assertEqual(len(set(PACK.PROPOSAL_SOURCES)), 27)
-        for name in PACK.PROPOSAL_SOURCES:
+        self.assertEqual(len(PACK.WORKBENCH_SOURCES), len(set(PACK.WORKBENCH_SOURCES)))
+        self.assertLess(set(PACK.PROPOSAL_SOURCES), set(PACK.WORKBENCH_SOURCES))
+        self.assertIn('scripts/public_peer_editor_ui.cjs', PACK.WORKBENCH_SOURCES)
+        for name in PACK.WORKBENCH_SOURCES:
             if not name.endswith('.cjs'):
                 continue
             for dependency in re.findall(r"require\(['\"](\.[^'\"]+)['\"]\)", (ROOT / name).read_text()):
                 target = ((ROOT / name).parent / dependency).resolve().relative_to(ROOT).as_posix()
-                self.assertIn(target, PACK.PROPOSAL_SOURCES, (name, dependency))
+                self.assertIn(target, PACK.PROPOSAL_SOURCES if name in PACK.PROPOSAL_SOURCES else PACK.WORKBENCH_SOURCES,
+                              (name, dependency))
         with patch.object(PACK, 'pack_proposal', side_effect=AssertionError('must not capture')), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             PACK.main(['--public-code-proposal'])

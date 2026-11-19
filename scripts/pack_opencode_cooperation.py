@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import stat
 import subprocess
 
@@ -33,6 +34,9 @@ SOURCES = tuple('src/' + name for name in (
 PROPOSAL_SOURCES = SOURCES + ('src/public-code-result.cjs', 'src/public-code-file.cjs',
     'src/workspace-verifier.cjs', 'scripts/smoke_opencode_inference.cjs',
     'scripts/smoke_public_code_proposal.cjs')
+WORKBENCH_SOURCES = PROPOSAL_SOURCES + ('package.json', 'src/extension.cjs', 'src/editor-verification.cjs',
+    'src/native-coding-fixture.cjs', 'scripts/smoke_editor_ui.cjs', 'scripts/opencode_editor_ui.cjs',
+    'scripts/public_peer_editor_ui.cjs')
 
 
 def require(value, reason):
@@ -110,15 +114,24 @@ def pack(args):
 
 def pack_proposal(args):
     output_path(args.output, 'public-code-proposal-inputs')
-    source = blobs(args.code_revision, PROPOSAL_SOURCES)
+    workbench = getattr(args, 'vscodium_workbench', False)
+    source = blobs(args.code_revision, WORKBENCH_SOURCES if workbench else PROPOSAL_SOURCES)
     node_license = args.node.parent.parent / 'LICENSE'
     for candidate, expected in ((args.node, NODE), (node_license, NODE_LICENSE)):
         require(owned_file(candidate, 200 * 1024**2).st_size == expected[0]
                 and digest(candidate) == expected[1], 'exact_node_input')
     require(os.access(args.node, os.X_OK), 'node_executable')
     inputs = {'runtime/node': (args.node, NODE[1]), 'runtime/node-LICENSE': (node_license, NODE_LICENSE[1])}
-    return capture(args, source, inputs, dict(version=1, kind='public-code-proposal-inputs',
-        code_revision=args.code_revision, node_version=NODE_VERSION))
+    manifest = dict(version=1, kind='public-code-proposal-inputs', code_revision=args.code_revision,
+                    node_version=NODE_VERSION)
+    if workbench:
+        editor = runpy.run_path(str(Path(__file__).with_name('opencode_editor.py')))
+        package = args.editor_deb
+        require(owned_file(package, editor['DEB_SIZE']).st_size == editor['DEB_SIZE']
+                and digest(package) == editor['DEB_SHA'], 'exact_vscodium_release')
+        inputs['runtime/editor.deb'] = (package, editor['DEB_SHA'])
+        manifest.update(version=2, frontend='vscodium')
+    return capture(args, source, inputs, manifest)
 
 
 def capture(args, source, inputs, manifest):
@@ -155,10 +168,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--public-code-proposal', action='store_true')
+    parser.add_argument('--vscodium-workbench', action='store_true', help='Capture the public proposal editor and its rendered UI driver.')
     parser.add_argument('--code-revision')
-    for name in ('node', 'build-report', 'output'):
+    for name in ('node', 'build-report', 'output', 'editor-deb'):
         parser.add_argument('--' + name, type=Path)
     args = parser.parse_args(argv)
+    require(not args.vscodium_workbench or args.public_code_proposal, 'workbench_requires_public_proposal')
     if not args.execute:
         print(json.dumps(dict(execute=False, plan='capture_exact_code_blobs_and_existing_source_build',
                              downloads=False, runtime_execution=False, network_participation=False)))
@@ -166,6 +181,7 @@ def main(argv=None):
     required = ('code_revision', 'node', 'output') if args.public_code_proposal else ('code_revision', 'node', 'build_report', 'output')
     require(all(getattr(args, name) is not None for name in required),
             'explicit_capture_inputs')
+    require(args.vscodium_workbench == (args.editor_deb is not None), 'workbench_release_input')
     if args.public_code_proposal:
         require(args.build_report is None, 'proposal_has_no_local_planner')
     print(json.dumps(pack_proposal(args) if args.public_code_proposal else pack(args)))

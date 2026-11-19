@@ -84,7 +84,7 @@ async function button(cdp, dialog, label) {
   await cdp.click(choices[0]);
 }
 
-async function drive(cdp, project, evidence, stopAtConsent = false) {
+async function trustWorkspace(cdp, evidence) {
   const start = Date.now();
   // A fresh editor profile must grant trust to the only disposable folder.
   const initial = await until(cdp, STARTUP_STATE, state => state.manage !== null, start + 60000, 'trust_banner');
@@ -95,11 +95,19 @@ async function drive(cdp, project, evidence, stopAtConsent = false) {
   evidence.workspace_trust_granted = true;
   await cdp.key('Escape','Escape',27);
   await until(cdp, STARTUP_STATE, state => !state.trustPage, Date.now()+15000, 'trust_close');
+}
+
+async function invokeCommand(cdp, label) {
   const palette = await openPalette(cdp, Date.now()+30000, startupObservation());
   await cdp.click(palette.quick); await cdp.key('a','KeyA',65,2);
-  await cdp.call('Input.insertText', {text:'>'+LABEL});
-  await until(cdp, STARTUP_STATE, state => state.paletteLabel === LABEL, Date.now()+15000, 'command_palette');
+  await cdp.call('Input.insertText', {text:'>'+label});
+  await until(cdp, STARTUP_STATE, state => state.paletteLabel === label, Date.now()+15000, 'command_palette');
   await cdp.key('Enter','Enter',13);
+}
+
+async function drive(cdp, project, evidence, stopAtConsent = false) {
+  await trustWorkspace(cdp, evidence);
+  await invokeCommand(cdp, LABEL);
   const prompt = await until(cdp, undefined, v => v.quick?.title === 'VOLPAROSSA OpenCode task',
     Date.now()+30000, 'task_input');
   await cdp.click(prompt.quick); await cdp.call('Input.insertText', {text:TASK});
@@ -193,4 +201,4 @@ async function main() {
   if (!evidence.passed) process.exitCode=1;
 }
 if (require.main===module) main().catch(()=>{process.exitCode=1;});
-module.exports={CHECK, LABEL, drive, decision};
+module.exports={CHECK, LABEL, drive, decision, trustWorkspace, invokeCommand, until, button};
