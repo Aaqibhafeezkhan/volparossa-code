@@ -31,16 +31,20 @@ const STATE = `(() => {
   const dialogs = [...document.querySelectorAll('.monaco-dialog-box')].filter(visible).map(d=>({
     message:[d.querySelector('.dialog-message-text')?.innerText,d.querySelector('.dialog-message-detail')?.innerText].filter(Boolean).join('\\n\\n'),
     buttons:[...d.querySelectorAll('.dialog-buttons .monaco-button')].filter(visible).map(b=>({label:text(b).trim(),...center(b)}))}));
-  const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].filter(visible).map(text);
-  const core=lines.find(line=>/^Core task: [0-9a-f]{32}$/.test(line));
-  const peer=lines.find(line=>/^Peer report SHA-256: [0-9a-f]{64}$/.test(line));
+  const documents = [...document.querySelectorAll('.monaco-editor .view-lines')].filter(visible)
+    .map(editor => [...editor.querySelectorAll('.view-line')].filter(visible).map(text));
+  const originalLines = ${JSON.stringify(ORIGINAL.trimEnd().split('\n'))};
+  const hasSource = lines => lines.some((line, i) => line === originalLines[0] &&
+    originalLines.every((expected, offset) => expected === lines[i + offset]));
+  const preview = documents.some(lines => lines.includes('Public source proposal — GPL-3.0-only') &&
+    lines.includes(${JSON.stringify(QUESTION)}) && lines.includes('Complete selected file:') && hasSource(lines));
+  const result = documents.find(lines => lines.includes('VOLPAROSSA public code proposal: applied to the selected file.'));
+  const core = result?.find(line => /^Core task: [0-9a-f]{32}$/.test(line));
+  const peer = result?.find(line => /^Peer report SHA-256: [0-9a-f]{64}$/.test(line));
   return {quick:visible(input)?center(input):null,title:text(quick?.querySelector('.quick-input-title')),
     license:choice.length===1?center(choice[0]):null, file:files.length===1?center(files[0]):null, dialogs,
-    source:lines.includes('def add(a, b):')&&lines.includes('    return a - b'),
-    preview:lines.includes('Public source proposal — GPL-3.0-only')&&lines.includes('Complete selected file:')&&
-      lines.includes(${JSON.stringify(QUESTION)})&&lines.includes('    return a - b'),
-    applied:lines.includes('VOLPAROSSA public code proposal: applied to the selected file.'),
-    checked:lines.includes('Owner-selected local check: passed; not general correctness.'),
+    source:documents.some(hasSource), preview, applied:!!result,
+    checked:!!result?.includes('Owner-selected local check: passed; not general correctness.'),
     core:core?.slice('Core task: '.length), peer:peer?.slice('Peer report SHA-256: '.length),
     failed:[...document.querySelectorAll('.notification-list-item-message')].filter(visible)
       .some(e=>text(e).includes('VOLPAROSSA could not complete this operation.'))};
