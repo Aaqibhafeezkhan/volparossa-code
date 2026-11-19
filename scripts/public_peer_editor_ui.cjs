@@ -141,8 +141,11 @@ async function run() {
   const uid=process.getuid(), socket=await fs.lstat(OWNER+'/public.sock');
   assert.ok(socket.isSocket() && socket.uid===uid && (socket.mode&0o777)===0o600);
   assert.equal((await fs.lstat('/usr/bin')).uid,0);
-  const output = path.join(OWNER, 'report.json');
-  await assert.rejects(fs.lstat(output), {code: 'ENOENT'});
+  const receipt = await fs.open(path.join(OWNER, 'report.json'), 'wx', 0o600);
+  try { await runInWorkspace(receipt); }
+  finally { await receipt.close(); }
+}
+async function runInWorkspace(receipt) {
   await fs.mkdir(SCRATCH,{mode:0o700});
   const evidence={version:1,kind:'vscodium-public-peer-workbench',passed:false,phase:'prepare',
     workspace_trust_granted:false,previewed_exact_public_source:false,owner_enrolled_public_source:false,
@@ -215,7 +218,7 @@ async function run() {
     evidence.project_removed = true;
   }
   evidence.passed=evidence.phase==='complete' && evidence.editor_joined && evidence.project_removed;
-  await fs.writeFile(output,JSON.stringify(evidence)+'\n',{flag:'wx',mode:0o600});
+  await receipt.writeFile(JSON.stringify(evidence)+'\n');
   if(!evidence.passed) process.exitCode=1;
 }
 if(require.main===module) run().catch(()=>{process.exitCode=1;});
