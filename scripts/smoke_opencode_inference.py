@@ -7,6 +7,7 @@ revision). execute owns one explicitly selected KVM, its private SSH keys and te
 guest is rejected outside the disposable vpci Debian KVM. No Codex is launched.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import io
@@ -15,6 +16,7 @@ import os
 from pathlib import Path, PurePosixPath
 import pwd
 import re
+import selectors
 import shutil
 import signal
 import socket
@@ -569,6 +571,43 @@ def start(name, command, limit, seconds, public_source_build=False, *, editor_co
          '--setenv=RUST_LOG=off,volparossa::compute::private_diagnostic=debug', '--setenv=NO_COLOR=1', *command])
 
 
+def accept_task_holder(listener, holder, deadline, report):
+    state = properties(TASK_UNIT)
+    pid = state.get('MainPID', '')
+    if (state.get('ActiveState') != 'active' or state.get('SubState') != 'running'
+            or not re.fullmatch('[1-9][0-9]{0,9}', pid)):
+        report['task_unit_before_ready'] = closed_native_unit(state)
+        raise ValueError('task_holder_ended_before_ready')
+    try:
+        pidfd = os.pidfd_open(int(pid))
+    except ProcessLookupError:
+        report['task_unit_before_ready'] = closed_native_unit(properties(TASK_UNIT))
+        raise
+    try:
+        with selectors.DefaultSelector() as ready:
+            ready.register(pidfd, selectors.EVENT_READ)
+            ready.register(listener, selectors.EVENT_READ)
+            events = ready.select(holder.remaining(deadline))
+            require(events, 'task_holder_deadline')
+            if any(key.fileobj == pidfd for key, _ in events):
+                report['task_unit_before_ready'] = closed_native_unit(properties(TASK_UNIT))
+                raise ValueError('task_holder_ended_before_ready')
+            return int(pid), listener.accept()[0]
+    finally:
+        os.close(pidfd)
+
+
+@contextmanager
+def record_task_failure(report):
+    try:
+        yield
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        if 'editor_runtime' in report:
+            from opencode_editor import failure_details
+            report['task_exception'] = failure_details(error)
+        raise
+
+
 def run_native_task(profile, backend, report):
     holder = module(INPUT / 'code/scripts/opencode_task_holder.py', 'opencode_task_holder_inputs')
     editor_ui = 'editor_runtime' in report
@@ -578,7 +617,7 @@ def run_native_task(profile, backend, report):
     owner_deadline = started + 2565 * 1_000_000_000
     task_root = PROJECTS if editor_ui else BASE
     path = task_root / holder.CONTROL
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+    with record_task_failure(report), socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(path))
         path.chmod(0o600)
         listener.listen(1)
@@ -586,20 +625,11 @@ def run_native_task(profile, backend, report):
               '--deadline-monotonic-ns', str(deadline), '--handshake-nonce', nonce,
               '--parent-pid', str(os.getpid()), '--inference-backend', backend,
               *(['--editor-ui'] if editor_ui else [])], task_memory_limit, 2550)
-        while True:
-            listener.settimeout(min(2.0, holder.remaining(deadline)))
-            try:
-                channel, _ = listener.accept()
-                break
-            except TimeoutError:
-                state = properties(TASK_UNIT)
-                require(state.get('ActiveState') == 'active' and state.get('SubState') == 'running',
-                        'task_holder_ended_before_ready')
-        with channel:
+        pid, connection = accept_task_holder(listener, holder, deadline, report)
+        with connection as channel:
             state = properties(TASK_UNIT)
             require(state.get('ActiveState') == 'active' and state.get('SubState') == 'running'
-                    and re.fullmatch('[0-9]{1,10}', state.get('MainPID', '')), 'task_holder_not_running')
-            pid = int(state['MainPID'])
+                    and state.get('MainPID') == str(pid), 'task_holder_not_running')
             holder.peer(channel, pid)
             ready = holder.decode_ready(holder.receive_frame(channel, deadline), nonce)
             status = ready['child_returncode']

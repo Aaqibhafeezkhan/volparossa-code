@@ -434,6 +434,35 @@ class Cases(unittest.TestCase):
         self.assertEqual(str(error), 'task_holder_exit')
         self.assertEqual(process.wait(timeout=3), 0)
 
+    def test_kernel_wait_observes_early_exit_without_a_ready_frame(self):
+        _, server = self.listener()
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(.2); raise SystemExit(37)'])
+        self.processes.append(child)
+        running = dict(ActiveState='active', SubState='running', MainPID=str(child.pid))
+        ended = dict(ActiveState='failed', SubState='failed', Result='exit-code', ExecMainStatus='37')
+        report = {}
+        with server, patch.object(T, 'properties', side_effect=[running, ended]) as query:
+            with self.assertRaisesRegex(ValueError, 'ended_before_ready'):
+                T.accept_task_holder(server, H, deadline(4), report)
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(report['task_unit_before_ready'], T.closed_native_unit(ended))
+        self.assertNotIn('task', report)
+        self.assertEqual(child.wait(timeout=1), 37)
+
+    def test_kernel_wait_performs_one_unit_query_while_a_real_child_works(self):
+        path, server = self.listener()
+        child = self.spawn(path, command=[sys.executable, '-c', 'import time; time.sleep(2.2)'])
+        running = dict(ActiveState='active', SubState='running', MainPID=str(child.pid))
+        with server, patch.object(T, 'properties', return_value=running) as query:
+            pid, connection = T.accept_task_holder(server, H, deadline(), {})
+            with connection:
+                H.peer(connection, pid)
+                ready = H.decode_ready(H.receive_frame(connection, deadline()), NONCE)
+                H.send_frame(connection, H.binding('release', NONCE, 0, ready['receipt_sha256']), deadline())
+        self.assertEqual(pid, child.pid)
+        query.assert_called_once_with(T.TASK_UNIT)
+        self.assertEqual(child.wait(timeout=3), 0)
+
     def test_receipt_hash_mismatch_releases_holder_but_refuses_task(self):
         report, error, process, _ = self.run_parent(receipt_changed=True)
         self.assertIsInstance(error, ValueError)
