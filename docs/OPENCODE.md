@@ -102,6 +102,27 @@ the original test bytes must survive unchanged. The parent separately checks
 native model provenance, cgroup cleanup and VM shutdown. The exercise uses
 a local model in the disposable guest and sends no repository to a peer.
 
+The complete workbench trial passed on Code
+`9342b3c0ed41a65a6a1379f6957d1021d57d7f6d` and Core
+`7d0f9f0b492c5e692cc9d26f23d95f55f2c1e651`. The owner granted trust to the
+disposable workspace and started OpenCode from the rendered editor. Qwen3 4B
+read two files, edited the arithmetic implementation and invoked one shell
+test. The workbench recorded three separate approvals for the edit, shell
+test and independent owner check. The original three-test suite failed at baseline
+and all three tests passed against the changed source. The workbench displayed
+the successful result. The full VM step took 44 minutes 19 seconds.
+[Original VSCodium run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44526473502).
+
+The editor and task cgroup peaked at 1,550,524,416 bytes, Core at 6,729,953,280
+bytes and QEMU at 13,501,227,008 bytes. All recorded zero OOM kills and swap.
+The editor exited, the selected project was removed, Core stopped cleanly and
+QEMU was joined. The host route and DNS snapshots matched. The original
+11,859-byte receipt archive has SHA-256
+`81793648d7f95982e70e35c397aefbea5dca4ff5b56139e8dbc01f12ef3b656d`.
+The model ran locally inside the disposable guest. Confidential private-peer
+execution and general coding quality remain open.
+[Download the original receipt ZIP](evidence/vscodium-qwen4b-44526473502.zip).
+
 The first editor run reached the real trust flow, task consent and Start button.
 It stopped before the first model request. Its additional user namespace exposed
 the root-owned Python verifier as UID 65534. The production verifier refused it.
