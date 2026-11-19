@@ -102,14 +102,13 @@ failed trials remain documented. This path pins the exact tested core candidate
 Protected peer execution and the complete immune-policy path remain open. See the
 [native CPU evidence](docs/OPENCODE.md#explicit-native-cpu-candidate).
 
-**Real public peer proof:** a separate owner command successfully obtained a
-small single-file replacement from a real Qwen0.6B worker on another peer.
-After explicit edit and check approvals, the unchanged original tests and an
-independent check passed. The original
-[disposable-network trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/37221727043)
-also passed its discovery/task route checks and complete cleanup. This proves
-that bounded public operation, not a native OpenCode planning loop, general
-coding quality or confidential execution of private source on other devices.
+**Public peer coding in VSCodium.** In the twelve-node Debian KVM, the installed
+`VOLPAROSSA: Propose a Replacement for a Public Source File` command enrolled
+one owner-approved file and question. Core discovered a Qwen3-0.6B peer that
+returned a 31-byte replacement. VSCodium obtained separate approval for the
+local edit and test. The workbench showed the original peer job and report
+digest. The three unchanged tests then passed independently. Discovery, task
+routing and cleanup also passed. [Native workbench proof](docs/OPENCODE.md#public-peer-coding-through-the-vscodium-workbench) · [Earlier headless proof](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/37221727043)
 
 The available conversation executor is still **private and local**. Its scope is
 shown honestly; the adapter does not disguise it as network compute or export
