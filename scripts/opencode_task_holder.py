@@ -217,6 +217,7 @@ def main():
     parser.add_argument('--handshake-nonce', required=True)
     parser.add_argument('--parent-pid', type=int, required=True)
     parser.add_argument('--inference-backend', choices=('llama_cpp_bf16_v1',), required=True)
+    parser.add_argument('--editor-ui', action='store_true')
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('task_holder_trial', Path(__file__).with_name('smoke_opencode_inference.py'))
     trial = importlib.util.module_from_spec(spec)
@@ -227,7 +228,7 @@ def main():
             'disposable_guest_required')
     require(remaining(args.deadline_monotonic_ns) <= TASK_SECONDS)
     binding('ready', args.handshake_nonce, 0, None)
-    status = hold(trial.task_arguments(args.inference_backend), trial.BASE / CONTROL,
+    status = hold(trial.task_arguments(args.inference_backend, args.editor_ui), trial.BASE / CONTROL,
                   trial.BASE / 'task.json', args.handshake_nonce, args.deadline_monotonic_ns, args.parent_pid)
     if status < 0:
         # Preserve systemd Result=signal/ExecMainStatus for this own process only.

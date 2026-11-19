@@ -3,6 +3,11 @@ name: Explicit OpenCode Qwen KVM inference
 on:
   workflow_dispatch:
     inputs:
+      editor_ui:
+        description: Run the trusted VSCodium workbench, production OpenCode command and one-shot approvals (native Qwen4B)
+        type: boolean
+        required: false
+        default: false
       expected_code_sha:
         description: Exact reviewed 40-character Code commit dispatched (no branch substitution)
         type: string
@@ -36,6 +41,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
+      EDITOR_UI: ${{ inputs.editor_ui }}
       EXPECTED_CODE_SHA: ${{ inputs.expected_code_sha }}
       MODEL_PROFILE: ${{ inputs.model_profile }}
       INFERENCE_BACKEND: ${{ inputs.inference_backend }}
@@ -50,6 +56,9 @@ jobs:
         id: selected_core
         run: |
           set -euo pipefail
+          if test "$EDITOR_UI" = true; then
+            test "$MODEL_PROFILE" = qwen3-4b-instruct-2507-v1 && test "$INFERENCE_BACKEND" = llama_cpp_bf16_v1 || exit 2
+          fi
           python3 -B scripts/opencode_ci.py select --model-profile "$MODEL_PROFILE" --inference-backend "$INFERENCE_BACKEND" >>"$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,19 +119,23 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_CODE_SHA"
           test -z "$(git status --porcelain)"
-          python3 -B scripts/smoke_opencode_inference.py pack --core "$PWD/build/ci-core" \
+          ui=()
+          if test "$EDITOR_UI" = true; then ui+=(--editor-ui); fi
+          python3 -B scripts/smoke_opencode_inference.py pack "${ui[@]}" --core "$PWD/build/ci-core" \
             --node "$PWD/build/ci-node/bin/node" --output "$PWD/build/ci-inputs.tar.gz" --model-profile "$MODEL_PROFILE" --inference-backend "$INFERENCE_BACKEND"
           python3 -B scripts/opencode_ci.py capture --model-profile "$MODEL_PROFILE" --inference-backend "$INFERENCE_BACKEND"
       - name: One actual OpenCode core Qwen edit and test trial
         timeout-minutes: 115
         run: |
           set -euo pipefail
+          ui=()
+          if test "$EDITOR_UI" = true; then ui+=(--editor-ui); fi
           # No Actions runtime credentials are inherited by QEMU or SSH.
           env -i PATH=/usr/bin:/bin LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
             GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RUNNER_OS=Linux \
             GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_SHA="$GITHUB_SHA" \
             XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
-            python3 -B scripts/smoke_opencode_inference.py execute --yes --host-tools-profile github-ubuntu-24.04 \
+            python3 -B scripts/smoke_opencode_inference.py execute --yes "${ui[@]}" --host-tools-profile github-ubuntu-24.04 \
               --model-profile "$MODEL_PROFILE" \
               --inference-backend "$INFERENCE_BACKEND" \
               --core "$PWD/build/ci-core" --tools /usr \

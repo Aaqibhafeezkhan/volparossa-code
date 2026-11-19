@@ -88,8 +88,11 @@ def validate_backend_fields(value, profile):
             == expected, 'input_backend')
 
 
-def task_arguments(inference_backend='torch'):
+def task_arguments(inference_backend='torch', editor_ui=False):
     require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    if editor_ui:
+        require(inference_backend == 'llama_cpp_bf16_v1', 'editor_requires_native')
+        return [sys.executable, '-B', str(INPUT / 'code/scripts/opencode_editor.py'), 'run']
     return [str(INPUT / 'runtime/node'), str(INPUT / 'code/scripts/smoke_opencode_inference.cjs'),
             '--execute', '--yes', '--node', str(INPUT / 'runtime/node'), '--build-report',
             str(INPUT / 'runtime/build-report.json'), '--socket', str(BASE / 'private.sock'),
@@ -97,8 +100,19 @@ def task_arguments(inference_backend='torch'):
             *(['--output-constraint', OUTPUT_CONSTRAINT] if inference_backend != 'torch' else [])]
 
 
-def validate_task_selection(task, profile, inference_backend='torch'):
+def validate_task_selection(task, profile, inference_backend='torch', editor_ui=False):
     require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    require((task.get('kind') == 'opencode-vscodium-task') == editor_ui, 'task_frontend_mismatch')
+    if editor_ui and task.get('passed') is True:
+        view = task.get('rendered', {})
+        require(inference_backend == 'llama_cpp_bf16_v1' and task.get('editor_exited') is True
+                and task.get('baseline_tests_failed') is True and task.get('independent_test_passed') is True
+                and task.get('project_removed') is True and view.get('model_profile') == LARGE_MODEL
+                and all(view.get(key) is True for key in ('workspace_trust_granted', 'command_and_consent_rendered',
+                    'started_from_editor', 'editor_result_shown', 'owner_check_passed', 'cdp_closed', 'passed'))
+                and all(type(view.get(key)) is int and 1 <= view[key] <= 65535 for key in
+                    ('approved_edit', 'approved_test', 'approved_check', 'completed_reads', 'completed_edits',
+                     'completed_shell_commands')), 'editor_acceptance')
     require(task['model_profile'] == profile['model_profile'], 'task_model_mismatch')
     require(type(task.get('version')) is int and task['version'] == (1 if inference_backend == 'torch' else 2)
             and (task.get('output_constraint') == OUTPUT_CONSTRAINT if inference_backend != 'torch'
@@ -302,6 +316,10 @@ def pack(args):
              'third_party/opencode.json', 'third_party/opencode-LICENSE.txt',
              'third_party/opencode-build-tools.json', 'patches/opencode-no-runtime-installs.patch',
              'LICENSE', 'THIRD_PARTY_LICENSES.md']
+    if getattr(args, 'editor_ui', False):
+        require(profile.get('inference_backend') == 'llama_cpp_bf16_v1', 'editor_requires_native')
+        names.extend(['package.json', 'scripts/smoke_editor_ui.cjs', 'scripts/opencode_editor_ui.cjs',
+                      'scripts/opencode_editor.py'])
     files.update({f'code/{name}': ROOT / name for name in names})
     files.update({'runtime/opencode': binary, 'runtime/build-report.json': report_path,
                   'runtime/node': args.node, 'runtime/node-LICENSE': args.node.parent.parent / 'LICENSE'})
@@ -324,6 +342,8 @@ def pack(args):
             node_version='24.19.0', model_profile=profile['model_profile'], opencode_revision=report['source_commit'],
             opencode_binary_sha256=report['binary_sha256'], files=inventory)
         manifest.update(backend_fields(profile))
+        if getattr(args, 'editor_ui', False):
+            manifest['frontend'] = 'vscodium'
         encoded = (json.dumps(manifest, sort_keys=True, indent=2) + '\n').encode()
         with tarfile.open(args.output, 'x:gz', compresslevel=1) as target:
             for name, source in files.items():
@@ -537,6 +557,8 @@ def start(name, command, limit, seconds, public_source_build=False):
 
 def run_native_task(profile, backend, report):
     holder = module(INPUT / 'code/scripts/opencode_task_holder.py', 'opencode_task_holder_inputs')
+    editor_ui = 'editor_runtime' in report
+    task_memory_limit = (2048 if editor_ui else 768) * 1024**2
     nonce, started = os.urandom(32).hex(), time.monotonic_ns()
     deadline = started + 2550 * 1_000_000_000
     owner_deadline = started + 2565 * 1_000_000_000
@@ -547,7 +569,8 @@ def run_native_task(profile, backend, report):
         listener.listen(1)
         start(TASK_UNIT, [sys.executable, '-B', str(INPUT / 'code/scripts/opencode_task_holder.py'),
               '--deadline-monotonic-ns', str(deadline), '--handshake-nonce', nonce,
-              '--parent-pid', str(os.getpid()), '--inference-backend', backend], 768 * 1024**2, 2550)
+              '--parent-pid', str(os.getpid()), '--inference-backend', backend,
+              *(['--editor-ui'] if editor_ui else [])], task_memory_limit, 2550)
         while True:
             listener.settimeout(min(2.0, holder.remaining(deadline)))
             try:
@@ -574,14 +597,14 @@ def run_native_task(profile, backend, report):
                     raw = holder.receipt_bytes(BASE / 'task.json')
                     require(hashlib.sha256(raw).hexdigest() == ready['receipt_sha256'], 'task_receipt_changed')
                     report['task'] = json.loads(raw)
-                    validate_task_selection(report['task'], profile, backend)
+                    validate_task_selection(report['task'], profile, backend, editor_ui)
                 else:
                     require(status != 0, 'task_holder_missing_success_receipt')
                 group = holder.Group(cgroup(TASK_UNIT), pid)
                 try:
                     report['core_memory'] = memory(CORE_UNIT)
                     report['task_memory'] = group.memory()
-                    require(report['task_memory']['maximum'] == 768 * 1024**2, 'task_memory_limit')
+                    require(report['task_memory']['maximum'] == task_memory_limit, 'task_memory_limit')
                     for field in ('core_memory', 'task_memory'):
                         require(report[field]['swap'] == report[field]['oom_kill'] == 0, 'resource_violation')
                 finally:
@@ -661,6 +684,14 @@ def guest(args):
             require(properties(NATIVE_UNIT).get('LoadState') == 'not-found', 'existing_unit')
             created.append(NATIVE_UNIT)
             report['native_build'] = run_native_build(profile['core_memory_bytes'], report)
+            if manifest.get('frontend') == 'vscodium':
+                report['phase'] = 'editor-provision'
+                editor = module(INPUT / 'code/scripts/opencode_editor.py', 'opencode_editor_inputs')
+                with (BASE / 'packages.log').open('ab') as log:
+                    subprocess.run(['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install',
+                        '--yes', '--no-install-recommends', *editor.PACKAGES], stdout=log, stderr=log,
+                        check=True, timeout=600)
+                report['editor_runtime'] = editor.provision()
         report['phase'] = 'model-provision'
         provision_stage = 'pins'
         model = module(private.ML / 'provision.py', 'opencode_model_provision')
@@ -978,6 +1009,9 @@ def execute(args):
              '--verify', '--output', canonical(args.tools)])
         host_tools = None
     manifest = validate_bundle(args.bundle, profile['model_profile'], backend)
+    editor_ui = getattr(args, 'editor_ui', False)
+    require(manifest.get('frontend') == ('vscodium' if editor_ui else None)
+            and (not editor_ui or backend == 'llama_cpp_bf16_v1'), 'input_frontend')
     # The host executes only this reviewed runner; guest code remains in KVM.
     require(manifest['files']['code/scripts/smoke_opencode_inference.py']['sha256'] == digest(Path(__file__)),
             'runner_differs_from_captured_input')
@@ -1010,6 +1044,8 @@ def execute(args):
         host_firewall_modified=False, actual_model_execution_proven=False,
         confidential_remote_execution_proven=False)
     receipt.update(backend_fields(profile))
+    if editor_ui:
+        receipt['frontend'] = 'vscodium'
     if host_tools is not None:
         receipt['host_tools_profile'] = tools_profile
         receipt['host_tools_sha256'] = hashlib.sha256(json.dumps(host_tools, sort_keys=True).encode()).hexdigest()
@@ -1114,7 +1150,11 @@ def execute(args):
         require(result.get('core_revision') == profile['core_revision']
                 and result.get('model_profile') == profile['model_profile'], 'guest_source_profile')
         if backend != 'torch' and result.get('passed') is True:
-            validate_task_selection(result.get('task', {}), profile, backend)
+            validate_task_selection(result.get('task', {}), profile, backend, editor_ui)
+            if editor_ui:
+                require(result.get('editor_runtime', {}).get('binary_sha256')
+                        == '51ea8d7fb3795a03754b6518fb738d202fbb13185336de6719c4fd8b4ba984aa',
+                        'editor_provenance')
         receipt['actual_model_execution_proven'] = bool(result.get('passed') and result.get('actual_model_provisioned'))
         require(executed.returncode == 0 and result.get('passed') is True, 'guest_trial_failed')
         receipt['phase'], status = 'complete', 0
@@ -1171,9 +1211,11 @@ def main():
     packing.add_argument('--core', type=Path, required=True)
     packing.add_argument('--node', type=Path, required=True)
     packing.add_argument('--output', type=Path, required=True)
+    packing.add_argument('--editor-ui', action='store_true')
     guest_parser = modes.add_parser('guest')
     execution = modes.add_parser('execute')
     execution.add_argument('--yes', action='store_true')
+    execution.add_argument('--editor-ui', action='store_true')
     execution.add_argument('--host-tools-profile', choices=('workspace-debian', 'github-ubuntu-24.04'),
                            default='workspace-debian')
     for name in ('core', 'tools', 'image', 'bundle', 'output'):

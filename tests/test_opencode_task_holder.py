@@ -200,7 +200,7 @@ class Cases(unittest.TestCase):
         # The inert runner exits normally with the negative result; production
         # main instead reproduces the signal on its own process, tested below.
         process.wait(timeout=3)
-        trial = SimpleNamespace(BASE=self.root, task_arguments=lambda _: ['fixed-node-command'],
+        trial = SimpleNamespace(BASE=self.root, task_arguments=lambda backend, editor_ui: ['fixed-node-command'],
             pwd=SimpleNamespace(getpwuid=lambda _: SimpleNamespace(pw_name='vpci')),
             run=lambda *a, **kw: SimpleNamespace(stdout='kvm\n'))
         spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _: None))
@@ -464,7 +464,7 @@ class Cases(unittest.TestCase):
         self.assertNotIn('task_arguments(', parent)
         main = inspect.getsource(H.main)
         self.assertIn("choices=('llama_cpp_bf16_v1',)", main)
-        self.assertIn("trial.task_arguments(args.inference_backend)", main)
+        self.assertIn("trial.task_arguments(args.inference_backend, args.editor_ui)", main)
         self.assertIn("trial.BASE / 'task.json'", main)
         self.assertIn("'volparossa-alpha'", main)
         self.assertIn("'vpci'", main)
@@ -480,7 +480,7 @@ class Cases(unittest.TestCase):
         parser = ast.parse(main)
         options = [node.args[0].value for node in ast.walk(parser) if isinstance(node, ast.Call)
                    and isinstance(node.func, ast.Attribute) and node.func.attr == 'add_argument']
-        self.assertEqual(set(options), {'--deadline-monotonic-ns', '--handshake-nonce', '--parent-pid', '--inference-backend'})
+        self.assertEqual(set(options), {'--deadline-monotonic-ns', '--handshake-nonce', '--parent-pid', '--inference-backend', '--editor-ui'})
 
     def test_final_cleanup_preserves_live_native_task_sample_without_skipping_stop(self):
         tree = ast.parse(inspect.getsource(T.guest))

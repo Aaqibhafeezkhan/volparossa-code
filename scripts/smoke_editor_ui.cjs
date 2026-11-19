@@ -171,8 +171,8 @@ class CDP {
       this.pending.set(id, {resolve, reject, timer}); this.socket.send(JSON.stringify({id, method, params}));
     });
   }
-  async snapshot() {
-    const value = await this.call('Runtime.evaluate', {expression: SNAPSHOT, returnByValue: true});
+  async snapshot(expression = SNAPSHOT) {
+    const value = await this.call('Runtime.evaluate', {expression, returnByValue: true});
     demand(!value.exceptionDetails && value.result?.value && JSON.stringify(value.result.value).length <= 32768, 'ui_bound');
     return value.result.value;
   }

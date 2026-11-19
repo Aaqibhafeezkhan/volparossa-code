@@ -88,7 +88,7 @@ class Contracts(unittest.TestCase):
         self.assertIn("native.require_output_constraint(report['native_build'], report['native_backend'])", guest)
         host = inspect.getsource(TRIAL.execute)
         self.assertIn("if backend != 'torch' and result.get('passed') is True:\n"
-                      "            validate_task_selection(result.get('task', {}), profile, backend)", host)
+                      "            validate_task_selection(result.get('task', {}), profile, backend, editor_ui)", host)
         self.assertLess(host.index("validate_task_selection(result.get('task', {})"),
                         host.index("receipt['actual_model_execution_proven'] = bool"))
 

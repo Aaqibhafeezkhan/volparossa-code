@@ -66,6 +66,42 @@ owner-selected check after each completed coding turn. Each invocation requires
 separate approval; an actual failed check can continue the same session within
 the original task budget. See [editor setup and check limitations](OWNER_VERIFICATION.md#use-from-the-editor).
 
+### VSCodium workbench trial
+
+The manual **Explicit OpenCode Qwen KVM inference** workflow accepts an optional
+`editor_ui` selection for the Qwen4B BF16 native profile. Its default remains
+the existing command-line trial. Dispatch with the exact commit of a reviewed
+development branch as both its ref target and `expected_code_sha`.
+
+```sh
+gh workflow run opencode-inference.yml --ref "$reviewed_branch" \
+  -f expected_code_sha="$reviewed_sha" -f model_profile=qwen3-4b-instruct-2507-v1 \
+  -f inference_backend=llama_cpp_bf16_v1 -f editor_ui=true
+```
+
+The disposable VM acquires the official VSCodium 1.135.06055 AMD64 Debian
+release and verifies its package, declared source commit and executable. The
+package SHA-256 is `5f5c00a9da9d232e4c84e9eee68bbdeb4d8737462022626ce3bdb6948f3d8649`.
+The unpacked executable matches the Core historical editor inventory. All package
+licenses and notices stay with the distribution. [Official VSCodium release](https://github.com/VSCodium/vscodium/releases/tag/1.135.06055).
+
+The rendered workbench runs with a new profile, only loopback, read-only
+application inputs and one writable synthetic arithmetic project. The driver
+uses keyboard and mouse events to grant workspace trust, open **Run OpenCode
+Task (Development)**, enter the original task and approve the precise project.
+It checks each rendered edit, shell and owner-verification request against that
+fixture. The deployed extension owns the runtime, model connection, tool prompts
+and shutdown. The model uses the same Core/Qwen4B backend and existing task and
+inference deadlines as the headless fixture. The editor and task share a 2 GiB
+cgroup ceiling. The ordinary headless ceiling remains 768 MiB.
+
+A passing editor receipt requires observed completed native reads, edits and
+shell commands, visible owner-check success, and independent execution of the
+three original tests against the changed source. Its baseline must fail and
+the original test bytes must survive unchanged. The parent separately checks
+native model provenance, cgroup cleanup and VM shutdown. The exercise uses
+a local model in the disposable guest and sends no repository to a peer.
+
 ### Connection-bound native execution candidate
 
 The native CPU path now requests a connection-bound session from the core.

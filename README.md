@@ -86,6 +86,11 @@ a final response. The original tests stay unchanged and an independent check
 passes. Task-resource measurements, unchanged inputs, clean core shutdown and
 guest/VM cleanup are verified.
 
+The same manual KVM workflow has an optional VSCodium path. It opens a disposable
+arithmetic project, grants trust to that folder through the workbench and invokes
+the production OpenCode command. The receipt requires the rendered result, actual
+model tool counts and passing original tests. [Editor trial](docs/OPENCODE.md#vscodium-workbench-trial).
+
 The task takes about 37 minutes on the disposable CPU runner; this is a working
 development slice, not competitive performance or general coding-quality proof.
 The core processes the complete prompt in adaptive blocks while retaining the
