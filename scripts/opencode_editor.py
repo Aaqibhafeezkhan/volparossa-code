@@ -118,7 +118,7 @@ def service_properties():
                  str(EDITOR), str(CODE), str(INPUT / 'runtime'), str(BASE / 'private.sock') + ':' + str(socket_path)]
     return ['--property=RootDirectory=' + str(root), '--property=RootEphemeral=yes', '--property=MountAPIVFS=yes', '--property=PrivateDevices=yes',
             '--property=CapabilityBoundingSet=', '--property=ProtectProc=invisible', '--property=ProtectSystem=strict',
-            '--property=ProtectKernelTunables=yes', '--property=ProtectControlGroups=yes',
+            '--property=ReadOnlyPaths=/sys', '--property=ProtectControlGroups=yes',
             '--property=TemporaryFileSystem=/tmp:mode=1777', '--property=BindReadOnlyPaths=' + ' '.join(read_only),
             '--property=BindPaths=' + str(project_parent), '--property=ReadWritePaths=' + str(project_parent)]
 
@@ -173,6 +173,19 @@ def inside():
                     editor.wait(timeout=7)
 
 
+def nested_sandbox_probe():
+    # A mask mounted over /proc/sys prevents an unprivileged nested namespace
+    # from mounting its own procfs, even though simple file/UID checks pass.
+    args = ['/usr/bin/bwrap', '--unshare-all', '--die-with-parent', '--cap-drop', 'ALL',
+            '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib',
+            '--symlink', 'usr/lib64', '/lib64', '--proc', '/proc', '--dev', '/dev', '/usr/bin/true']
+    probe = subprocess.run(args, capture_output=True, timeout=10, env=ENV)
+    return {'passed': probe.returncode == 0,
+            'proc_mount_refused': b"Can't mount proc" in probe.stderr,
+            'uid_map_refused': b'setting up uid map' in probe.stderr,
+            'kernel_hostname_writable': os.access('/proc/sys/kernel/hostname', os.W_OK)}
+
+
 def run():
     guard()
     os.umask(0o077)
@@ -181,6 +194,11 @@ def run():
                'model_profile': PROFILE, 'output_constraint': CONSTRAINT,
                'protected_peer_execution_proven': False, 'general_coding_quality_proven': False}
     try:
+        receipt['phase'] = 'sandbox-preflight'
+        receipt['nested_sandbox'] = nested_sandbox_probe()
+        require(receipt['nested_sandbox']['passed'] and not receipt['nested_sandbox']['kernel_hostname_writable'],
+                'nested_sandbox')
+        receipt['phase'] = 'fixture'
         subprocess.run([NODE, DRIVER, '--fixture', 'prepare'], env=ENV, check=True, timeout=25)
         receipt['baseline_tests_failed'] = True
         receipt['phase'] = 'editor'
