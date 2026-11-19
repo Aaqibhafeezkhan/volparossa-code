@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 """One explicit OpenCode/Qwen guest trial; no host model execution or installation.
 
-pack captures the dirty Code candidate by exact file hash (never as a clean Git
-revision). execute owns one explicitly selected KVM, its private SSH keys and teardown.
+pack captures the selected Code files by exact hash and compares them with their Git
+revision. execute owns one explicitly selected KVM, its private SSH keys and teardown.
 guest is rejected outside the disposable vpci Debian KVM. No Codex is launched.
 """
 import argparse
@@ -303,6 +303,49 @@ def new_output(path):
             and path.is_relative_to(ROOT / 'build'), 'new_workspace_output')
 
 
+def code_files_match_revision(revision, files):
+    """Compare the packed byte inventory to regular Git blobs at this immutable commit."""
+    require(type(revision) is str and re.fullmatch('[0-9a-f]{40}', revision), 'code_source_revision')
+    expected = {name[5:]: row for name, row in files.items() if name.startswith('code/')}
+    require(0 < len(expected) < 128, 'code_source_inventory')
+    tree = run(['git', '-C', ROOT, '--literal-pathspecs', 'ls-tree', '-lz', revision, '--', *expected]).stdout
+    records = {}
+    for line in tree.split(b'\0'):
+        if line:
+            header, path = line.split(b'\t', 1)
+            records[os.fsdecode(path)] = header.split()
+    if records.keys() != expected.keys():
+        return False
+    for name, pin in expected.items():
+        mode, kind, oid, size = records[name]
+        if mode not in (b'100644', b'100755') or kind != b'blob' or int(size) != pin['bytes']:
+            return False
+        require(0 < pin['bytes'] < 200 * 1024**2, 'code_source_size')
+        blob = run(['git', '-C', ROOT, 'cat-file', 'blob', oid.decode('ascii')]).stdout
+        if hashlib.sha256(blob).hexdigest() != pin['sha256']:
+            return False
+    return True
+
+
+def source_binding(manifest):
+    version = manifest.get('version', 1)
+    require(type(version) is int, 'input_authority')
+    if version == 1:
+        # Version 1 used this fixed label even for independently verified clean
+        # checkouts. Preserve old evidence without converting it into a measurement.
+        require(manifest.get('code_contains_uncommitted_changes') is True
+                and manifest.get('code_git_head_proves_migration') is False
+                and 'code_files_match_base_revision' not in manifest, 'input_authority')
+        return {'code_contains_uncommitted_changes': True}
+    match = manifest.get('code_files_match_base_revision')
+    require(version == 2 and type(match) is bool
+            and type(manifest.get('code_base_revision')) is str
+            and re.fullmatch('[0-9a-f]{40}', manifest['code_base_revision'])
+            and 'code_contains_uncommitted_changes' not in manifest
+            and 'code_git_head_proves_migration' not in manifest, 'input_authority')
+    return {'code_files_match_base_revision': match}
+
+
 def pack(args):
     profile = trial_profile(getattr(args, 'model_profile', MODEL), getattr(args, 'inference_backend', 'torch'))
     new_output(args.output)
@@ -345,9 +388,9 @@ def pack(args):
             require(stat.S_ISREG(info.st_mode) and 0 < info.st_size < 200 * 1024**2, 'source_file')
             inventory[name] = {'bytes': info.st_size, 'sha256': digest(source),
                                'mode': 0o700 if name in ('runtime/opencode', 'runtime/node') else 0o600}
-        manifest = dict(version=1, kind='opencode-inference-inputs', core_revision=profile['core_revision'],
-            code_base_revision=run(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).stdout.strip(),
-            code_contains_uncommitted_changes=True, code_git_head_proves_migration=False,
+        revision = run(['git', '-C', ROOT, 'rev-parse', 'HEAD'], text=True).stdout.strip()
+        manifest = dict(version=2, kind='opencode-inference-inputs', core_revision=profile['core_revision'],
+            code_base_revision=revision, code_files_match_base_revision=code_files_match_revision(revision, inventory),
             node_version='24.19.0', model_profile=profile['model_profile'], opencode_revision=report['source_commit'],
             opencode_binary_sha256=report['binary_sha256'], files=inventory)
         manifest.update(backend_fields(profile))
@@ -369,16 +412,16 @@ def pack(args):
     print(json.dumps({'packed': True, 'sha256': digest(args.output), 'bytes': args.output.stat().st_size,
                       'manifest_sha256': hashlib.sha256(encoded).hexdigest(), 'files': len(inventory),
                       'core_revision': profile['core_revision'], 'model_profile': profile['model_profile'],
-                      'code_contains_uncommitted_changes': True}))
+                      **source_binding(manifest)}))
 
 
 def staged_inputs(model_profile=MODEL, inference_backend='torch'):
     profile = trial_profile(model_profile, inference_backend)
     manifest = load(INPUT / 'INPUTS.json')
     validate_backend_fields(manifest, profile)
-    require(manifest['core_revision'] == profile['core_revision'] and manifest['model_profile'] == model_profile
-            and manifest['code_contains_uncommitted_changes'] is True
-            and manifest['code_git_head_proves_migration'] is False, 'input_authority')
+    source_binding(manifest)
+    require(manifest['core_revision'] == profile['core_revision'] and manifest['model_profile'] == model_profile,
+            'input_authority')
     for name, row in manifest['files'].items():
         parts = PurePosixPath(name)
         require(not parts.is_absolute() and '..' not in parts.parts and str(parts) == name, 'input_name')
@@ -711,7 +754,7 @@ def guest(args):
     provision_stage, provision_pins, provision_wait_timeout = None, None, False
     report = dict(version=1, kind='opencode-real-inference-guest', passed=False, phase='packages',
         failure=None, core_revision=profile['core_revision'], input_manifest_sha256=digest(INPUT / 'INPUTS.json'),
-        code_contains_uncommitted_changes=True, model_profile=profile['model_profile'], actual_model_provisioned=False,
+        model_profile=profile['model_profile'], actual_model_provisioned=False, **source_binding(manifest),
         private_peer_execution_proven=False, confidential_remote_execution_proven=False,
         raw_model_output_exported=False, host_state_unchanged=None, units_empty=False, private_data_removed=False)
     report.update(backend_fields(profile))
@@ -1035,9 +1078,8 @@ def validate_bundle(path, model_profile=MODEL, inference_backend='torch'):
         require(manifest_entry.size <= 2 * 1024**2, 'manifest_bound')
         manifest = json.load(archive.extractfile(manifest_entry))
         validate_backend_fields(manifest, profile)
+        provenance = source_binding(manifest)
         require(manifest['core_revision'] == profile['core_revision'] and manifest['model_profile'] == model_profile
-                and manifest['code_contains_uncommitted_changes'] is True
-                and manifest['code_git_head_proves_migration'] is False
                 and set(manifest['files']) == set(names) - {'INPUTS.json'}, 'bundle_authority')
         for name, pin in manifest['files'].items():
             row = archive.getmember(name)
@@ -1045,6 +1087,9 @@ def validate_bundle(path, model_profile=MODEL, inference_backend='torch'):
                     and row.size <= 200 * 1024**2, 'bundle_file')
             with archive.extractfile(row) as stream:
                 require(hashlib.file_digest(stream, 'sha256').hexdigest() == pin['sha256'], 'bundle_hash')
+        if 'code_files_match_base_revision' in provenance:
+            require(code_files_match_revision(manifest['code_base_revision'], manifest['files'])
+                    == provenance['code_files_match_base_revision'], 'bundle_code_source')
     return manifest
 
 
@@ -1102,7 +1147,7 @@ def execute(args):
     receipt = dict(version=1, kind='opencode-inference-vm', passed=False, phase='prepare', failure=None,
         core_revision=profile['core_revision'], model_profile=profile['model_profile'],
         bundle_sha256=digest(args.bundle), bundle_bytes=args.bundle.stat().st_size,
-        code_contains_uncommitted_changes=True, memory_mib=profile['guest_memory_mib'], cpus=profile['guest_vcpus'], vm_started=False,
+        **source_binding(manifest), memory_mib=profile['guest_memory_mib'], cpus=profile['guest_vcpus'], vm_started=False,
         qemu_joined=False, scratch_removed=False, host_observed_routes_dns_unchanged=None,
         host_raw_route_dns_bytes_unchanged=None, host_observation_scope='proc_visible_routes_and_resolv_conf',
         host_firewall_modified=False, actual_model_execution_proven=False,
