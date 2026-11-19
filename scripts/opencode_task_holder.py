@@ -228,8 +228,9 @@ def main():
             'disposable_guest_required')
     require(remaining(args.deadline_monotonic_ns) <= TASK_SECONDS)
     binding('ready', args.handshake_nonce, 0, None)
-    status = hold(trial.task_arguments(args.inference_backend, args.editor_ui), trial.BASE / CONTROL,
-                  trial.BASE / 'task.json', args.handshake_nonce, args.deadline_monotonic_ns, args.parent_pid)
+    task_root = trial.PROJECTS if args.editor_ui else trial.BASE
+    status = hold(trial.task_arguments(args.inference_backend, args.editor_ui), task_root / CONTROL,
+                  task_root / 'task.json', args.handshake_nonce, args.deadline_monotonic_ns, args.parent_pid)
     if status < 0:
         # Preserve systemd Result=signal/ExecMainStatus for this own process only.
         if -status not in (signal.SIGKILL, signal.SIGSTOP):

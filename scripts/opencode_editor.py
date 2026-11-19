@@ -66,23 +66,30 @@ def provision():
     return {'package_sha256': DEB_SHA, 'binary_sha256': BINARY_SHA, 'source_commit': SOURCE, 'version': RELEASE}
 
 
-def sandbox():
-    args = ['/usr/bin/bwrap', '--die-with-parent', '--new-session', '--unshare-user',
-            '--uid', str(os.getuid()), '--gid', str(os.getgid()), '--unshare-net', '--unshare-pid',
-            '--unshare-ipc', '--unshare-uts', '--cap-drop', 'ALL', '--ro-bind', '/usr', '/usr',
-            '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/sbin', '/sbin', '--symlink', 'usr/lib', '/lib',
-            '--symlink', 'usr/lib64', '/lib64', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
-            '--dir', '/run', '--dir', '/etc']
-    for name in ('/etc/passwd', '/etc/group', '/etc/ld.so.cache', '/etc/fonts',
-                 '/sys/devices/virtual/dmi/id', '/sys/class/dmi/id'):
-        args.extend(['--ro-bind', name, name])
-    for directory in (Path('/home/vpci'), BASE, INPUT, UI.parent):
-        args.extend(['--perms', '0700', '--dir', str(directory)])
-    for name in (BASE / 'private.sock', EDITOR, CODE, INPUT / 'runtime'):
-        args.extend(['--ro-bind', str(name), str(name)])
-    return [*args, '--bind', str(UI), str(UI), '--chdir', str(UI), '--clearenv', '--setenv', 'HOME',
-            '/home/vpci', '--setenv', 'PATH', ENV['PATH'], '--setenv', 'LANG', ENV['LANG'],
-            '--', '/usr/bin/python3', '-B', str(CODE / 'scripts/opencode_editor.py'), 'inside']
+def service_properties():
+    # systemd builds this mount namespace before dropping to vpci. Real root
+    # ownership of /usr survives, as required by the production owner verifier.
+    guard()
+    root = BASE / 'editor-service-root'
+    root.mkdir(mode=0o700)
+    project_parent = UI.parent
+    for absolute in (Path('/usr'), Path('/etc'), Path('/proc'), Path('/sys'), Path('/dev'),
+                     Path('/run'), Path('/tmp'), project_parent, CODE, INPUT / 'runtime', EDITOR):
+        (root / absolute.relative_to('/')).mkdir(parents=True, exist_ok=True)
+    for name in ('bin', 'sbin', 'lib', 'lib64'):
+        (root / name).symlink_to('usr/' + name)
+    for name in ('passwd', 'group', 'ld.so.cache'):
+        (root / 'etc' / name).touch()
+    (root / 'etc/fonts').mkdir()
+    socket_path = project_parent / 'private.sock'
+    socket_path.touch(mode=0o600, exist_ok=False)
+    read_only = ['/usr', '/etc/passwd', '/etc/group', '/etc/ld.so.cache', '/etc/fonts',
+                 str(EDITOR), str(CODE), str(INPUT / 'runtime'), str(BASE / 'private.sock') + ':' + str(socket_path)]
+    return ['--property=RootDirectory=' + str(root), '--property=MountAPIVFS=yes', '--property=PrivateDevices=yes',
+            '--property=CapabilityBoundingSet=', '--property=ProtectProc=invisible', '--property=ProtectSystem=strict',
+            '--property=ProtectKernelTunables=yes', '--property=ProtectControlGroups=yes',
+            '--property=TemporaryFileSystem=/tmp:mode=1777', '--property=BindReadOnlyPaths=' + ' '.join(read_only),
+            '--property=BindPaths=' + str(project_parent), '--property=ReadWritePaths=' + str(project_parent)]
 
 
 def inside():
@@ -90,6 +97,10 @@ def inside():
     require({name for _, name in socket.if_nameindex()} == {'lo'} and Path.cwd() == UI, 'editor_network')
     require(int(next(v.split()[1] for v in Path('/proc/self/status').read_text().splitlines()
                      if v.startswith('CapEff:')), 16) == 0, 'editor_capabilities')
+    interpreter = Path('/usr/bin/python3').resolve()
+    require(interpreter.stat().st_uid == 0 and os.statvfs('/usr').f_flag & os.ST_RDONLY
+            and (UI.parent / 'private.sock').is_socket() and not (BASE / 'ml').exists()
+            and not Path('/home/vpci/source').exists() and not Path('/home/vpci/.ssh').exists(), 'editor_mounts')
     profile = UI / 'profile'
     (profile / 'User').mkdir(parents=True, mode=0o700)
     extensions = UI / 'extensions'
@@ -98,7 +109,7 @@ def inside():
     settings = {'window.dialogStyle': 'custom', 'workbench.startupEditor': 'none',
                 'telemetry.telemetryLevel': 'off', 'update.mode': 'none', 'extensions.autoUpdate': 'off',
                 'extensions.autoCheckUpdates': False, 'security.workspace.trust.enabled': True,
-                'volparossaCode.privateSocket': str(BASE / 'private.sock'),
+                'volparossaCode.privateSocket': str(UI.parent / 'private.sock'),
                 'volparossaCode.openCodeRuntime': {'version': 1, 'opencode': str(INPUT / 'runtime/opencode'),
                     'opencodeSha256': build['binary_sha256'], 'buildReport': str(INPUT / 'runtime/build-report.json'),
                     'node': str(NODE), 'nodeSha256': digest(NODE), 'outputConstraint': CONSTRAINT},
@@ -136,7 +147,10 @@ def run():
         subprocess.run([NODE, DRIVER, '--fixture', 'prepare'], env=ENV, check=True, timeout=25)
         receipt['baseline_tests_failed'] = True
         receipt['phase'] = 'editor'
-        completed = subprocess.run(sandbox(), env=ENV, timeout=2530, check=False)
+        home = UI / 'home'
+        home.mkdir(mode=0o700)
+        completed = subprocess.run([sys.executable, '-B', __file__, 'inside'], cwd=UI,
+                                   env={**ENV, 'HOME': str(home)}, timeout=2530, check=False)
         rendered = UI / 'rendered.json'
         if rendered.is_file():
             require(rendered.stat().st_size <= 8192, 'editor_receipt')
@@ -153,7 +167,7 @@ def run():
         shutil.rmtree(UI)
         receipt['project_removed'] = not UI.exists()
         receipt['passed'] = receipt['phase'] == 'complete' and receipt['project_removed']
-        with (BASE / 'task.json').open('x') as stream:
+        with (UI.parent / 'task.json').open('x') as stream:
             json.dump(receipt, stream)
     return 0 if receipt['passed'] else 1
 

@@ -543,10 +543,14 @@ def run_native_build(limit, report):
 
 def start(name, command, limit, seconds, public_source_build=False):
     require(not public_source_build or name == NATIVE_UNIT, 'native_build_network_scope')
+    editor_ui = name == TASK_UNIT and '--editor-ui' in command
+    editor_properties = (module(INPUT / 'code/scripts/opencode_editor.py', 'editor_task_service').service_properties()
+                         if editor_ui else [])
     (BASE / (name + '.log')).touch(mode=0o600)
     run(['sudo', '-n', 'systemd-run', '--quiet', '--unit=' + name, '--property=Type=exec',
          '--property=RemainAfterExit=yes', '--property=User=vpci', '--property=Group=vpci',
-         '--property=WorkingDirectory=/home/vpci/source', '--property=MemoryMax=' + str(limit),
+         '--property=WorkingDirectory=' + str(PROJECTS if editor_ui else SOURCE), *editor_properties,
+         '--property=MemoryMax=' + str(limit),
          '--property=MemorySwapMax=0', '--property=TasksMax=256', '--property=KillMode=control-group',
          '--property=RuntimeMaxSec=' + str(seconds), '--property=TimeoutStopSec=15',
          '--property=NoNewPrivileges=yes', '--property=PrivateNetwork=' + ('no' if public_source_build else 'yes'),
@@ -562,7 +566,8 @@ def run_native_task(profile, backend, report):
     nonce, started = os.urandom(32).hex(), time.monotonic_ns()
     deadline = started + 2550 * 1_000_000_000
     owner_deadline = started + 2565 * 1_000_000_000
-    path = BASE / holder.CONTROL
+    task_root = PROJECTS if editor_ui else BASE
+    path = task_root / holder.CONTROL
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(path))
         path.chmod(0o600)
@@ -594,7 +599,7 @@ def run_native_task(profile, backend, report):
             primary = None
             try:
                 if ready['receipt_sha256'] is not None:
-                    raw = holder.receipt_bytes(BASE / 'task.json')
+                    raw = holder.receipt_bytes(task_root / 'task.json')
                     require(hashlib.sha256(raw).hexdigest() == ready['receipt_sha256'], 'task_receipt_changed')
                     report['task'] = json.loads(raw)
                     validate_task_selection(report['task'], profile, backend, editor_ui)

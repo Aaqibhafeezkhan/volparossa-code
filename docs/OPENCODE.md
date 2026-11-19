@@ -102,6 +102,14 @@ the original test bytes must survive unchanged. The parent separately checks
 native model provenance, cgroup cleanup and VM shutdown. The exercise uses
 a local model in the disposable guest and sends no repository to a peer.
 
+The first editor run reached the real trust flow, task consent and Start button.
+It stopped before the first model request. Its additional user namespace exposed
+the root-owned Python verifier as UID 65534. The production verifier refused it.
+The editor now runs in a systemd-managed filesystem root with the original UID
+mapping, a read-only system runtime and an explicit mount for the Core socket.
+The OpenCode process and the separate owner check retain their own sandboxes.
+[First editor run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44437618311).
+
 ### Connection-bound native execution candidate
 
 The native CPU path now requests a connection-bound session from the core.

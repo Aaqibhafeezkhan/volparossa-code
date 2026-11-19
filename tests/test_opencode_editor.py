@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-only
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('opencode_trial', ROOT / 'scripts/smoke_opencode_inference.py')
@@ -9,7 +11,29 @@ trial = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(trial)
 
 
+editor_spec = importlib.util.spec_from_file_location('editor_service', ROOT / 'scripts/opencode_editor.py')
+editor = importlib.util.module_from_spec(editor_spec)
+editor_spec.loader.exec_module(editor)
+
+
 class EditorProof(unittest.TestCase):
+    def test_guest_service_retains_system_ownership_and_only_binds_the_selected_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, selected = Path(tmp) / 'private', Path(tmp) / 'projects'
+            base.mkdir()
+            selected.mkdir()
+            with patch.object(editor, 'BASE', base), patch.object(editor, 'UI', selected / 'ui'), patch.object(editor, 'guard'):
+                options = editor.service_properties()
+            self.assertIn('--property=RootDirectory=' + str(base / 'editor-service-root'), options)
+            self.assertIn('--property=ProtectSystem=strict', options)
+            self.assertIn('--property=BindPaths=' + str(selected), options)
+            files = next(x.removeprefix('--property=BindReadOnlyPaths=') for x in options if x.startswith('--property=BindReadOnlyPaths=')).split()
+            self.assertIn('/usr', files)
+            self.assertIn(str(base / 'private.sock') + ':' + str(selected / 'private.sock'), files)
+            self.assertNotIn(str(base), files)
+            self.assertNotIn(str(base / 'ml'), files)
+
+
     def test_explicit_fixed_native_entry_and_unmodified_default(self):
         native = 'llama_cpp_bf16_v1'
         self.assertEqual(trial.task_arguments(native, True)[-2:], [str(trial.INPUT / 'code/scripts/opencode_editor.py'), 'run'])
