@@ -29,7 +29,7 @@ const STATE = `(() => {
   const choice = rows.filter(r=>text(r.querySelector('.label-name'))==='GPL-3.0-only');
   const files = rows.filter(r=>text(r.querySelector('.label-name'))==='fixture.py');
   const dialogs = [...document.querySelectorAll('.monaco-dialog-box')].filter(visible).map(d=>({
-    message:[text(d.querySelector('.dialog-message-text')),text(d.querySelector('.dialog-message-detail'))].filter(Boolean).join('\\n\\n'),
+    message:[d.querySelector('.dialog-message-text')?.innerText,d.querySelector('.dialog-message-detail')?.innerText].filter(Boolean).join('\\n\\n'),
     buttons:[...d.querySelectorAll('.dialog-buttons .monaco-button')].filter(visible).map(b=>({label:text(b).trim(),...center(b)}))}));
   const lines = [...document.querySelectorAll('.monaco-editor .view-lines .view-line')].filter(visible).map(text);
   const core=lines.find(line=>/^Core task: [0-9a-f]{32}$/.test(line));
