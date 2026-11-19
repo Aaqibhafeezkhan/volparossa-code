@@ -943,10 +943,15 @@ def boot_running(state):
 def qemu_command(tools, scratch, firmware=None, model_profile=MODEL, inference_backend='torch', *, editor_ui=False):
     profile = trial_profile(model_profile, inference_backend, editor_ui=editor_ui)
     firmware = firmware or tools / 'root/usr/share/seabios/vgabios-stdvga.bin'
+    overlay = 'if=virtio,format=qcow2,file=' + str(scratch / 'overlay.qcow2')
+    if editor_ui:
+        # Direct image I/O avoids charging guest writes to a second page cache
+        # inside QEMU's no-swap cgroup. Guest flushes remain enabled.
+        overlay += ',cache=none'
     return [tools / 'bin/qemu-system-x86_64', '-name', 'volparossa-opencode-inference', '-no-user-config', '-nodefaults',
         '-machine', 'q35,accel=kvm', '-cpu', 'host', '-smp', str(profile['guest_vcpus']), '-m', str(profile['guest_memory_mib']),
         '-device', 'VGA,id=video0,bus=pcie.0,addr=0x1,romfile=' + str(firmware),
-        '-drive', 'if=virtio,format=qcow2,file=' + str(scratch / 'overlay.qcow2'),
+        '-drive', overlay,
         '-drive', 'if=virtio,format=raw,readonly=on,file=' + str(scratch / 'seed.img'),
         '-device', 'virtio-rng-pci', '-device', 'virtio-net-pci,netdev=net0',
         '-netdev', 'user,id=net0,hostfwd=tcp:127.0.0.1:22223-:22', '-display', 'none', '-monitor', 'none',

@@ -127,6 +127,18 @@ persistent approval dialogs every 1.5 seconds and skips trust-page scans. The
 600-second inference and 2,400-second owner-task deadlines still apply.
 [Editor generation receipt](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44449017418).
 
+The next run reached the 13 GiB QEMU limit during guest preparation. The
+cgroup recorded one OOM kill. Its terminal sample included 446,881,792 dirty
+file bytes. The editor trial now uses QEMU's direct I/O mode (`cache=none`)
+on its disposable writable qcow2 overlay. This avoids a second host page cache
+for guest disk data and preserves guest flushes. QEMU's hard limit and the
+read-only seed drive keep their existing settings. A local QEMU 10.0.13 check
+wrote and flushed 32 MiB to two qcow2 overlays. The kernel reported 8,257
+resident 4 KiB pages with writeback caching and 32 with direct I/O. Both
+readbacks and qcow2 consistency checks passed, and the backing file kept its
+original SHA-256.
+[QEMU cgroup receipt](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44454367646).
+
 ### Connection-bound native execution candidate
 
 The native CPU path now requests a connection-bound session from the core.

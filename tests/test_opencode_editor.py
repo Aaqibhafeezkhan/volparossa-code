@@ -55,6 +55,11 @@ class EditorProof(unittest.TestCase):
                                      inference_backend=native, editor_ui=True)
         self.assertEqual(command[command.index('-m') + 1], str(profile['guest_memory_mib']))
         self.assertEqual(command[command.index('-smp') + 1], '3')
+        self.assertIn('if=virtio,format=qcow2,file=/scratch/overlay.qcow2,cache=none', command)
+        self.assertIn('if=virtio,format=raw,readonly=on,file=/scratch/seed.img', command)
+        original = trial.qemu_command(Path('/tools'), Path('/scratch'), model_profile=trial.LARGE_MODEL,
+                                      inference_backend=native)
+        self.assertIn('if=virtio,format=qcow2,file=/scratch/overlay.qcow2', original)
         with self.assertRaisesRegex(ValueError, 'editor_requires_native'):
             trial.trial_profile(trial.LARGE_MODEL, 'torch', editor_ui=True)
 
