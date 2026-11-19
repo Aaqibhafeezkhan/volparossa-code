@@ -355,6 +355,16 @@ public because the tool is enabled. Public disclosure cannot be reversed by
 cancelling a task. Cancellation is propagated to the actual core task and cleanup
 is awaited; incomplete results remain incomplete.
 
+### Public peer coding through the VSCodium workbench
+
+On 19 November 2026, VSCodium 1.135.06055 exercised the public single-file command inside a twelve-node Debian KVM. The workbench's namespace had only loopback and one private, same-owner Unix socket to Core. The owner reviewed the complete source and question and selected GPL-3.0-only. Core discovered one eligible peer. An independent observer saw the isolated worker on `relay4` execute the original public dataset with Qwen3-0.6B, generate 12 tokens through EOS and return 31 bytes.
+
+The owner separately approved the exact local edit and the local test. The original three tests failed before the edit and passed afterward in both the selected and independent checks. The file SHA-256 matched the original worker output. The peer job shown in the workbench, `c3a0ff5718b35405a0372d48d0b3087d`, matched the retained handle. The displayed report SHA-256 matched the original report bytes. The owner request had its own correlation ID.
+
+The MPTCP/TLS exit recorded two completed flows in the discovery phase and seven in the task phase. Task-phase captures restricted compute traffic to the selected provider. VSCodium exited normally, all owned worker processes ended, and cleanup restored the guest's original network-state digest with zero remaining owned objects. This run exercised the public owner command inside one virtual topology. The OpenCode planning loop and private offload have their own tests.
+
+The Actions workflow at `5ad6f4c6` selected Core `06b12d06` and immutable Code driver `ab7dd3de`. To reproduce the workbench test, dispatch `opencode-public-code.yml` with the reviewed workflow ref, its full SHA as `expected_code_sha`, and `vscodium_workbench=true`. The 37-file original ZIP has SHA-256 `b8da40c52a1060d44efdbd7bdcd48329dcdc46e5af758324c739ac4889b24dac`. [Hosted run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44561152211) · [Original receipts](evidence/vscodium-public-peer-44561152211.zip)
+
 ### Explicit public single-file proposals (candidate)
 
 **Run OpenCode Task with Enrolled Public Source** connects the same native agent
