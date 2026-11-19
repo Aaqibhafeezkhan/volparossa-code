@@ -110,6 +110,14 @@ mapping, a read-only system runtime and an explicit mount for the Core socket.
 The OpenCode process and the separate owner check retain their own sandboxes.
 [First editor run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44437618311).
 
+The rendered editor subsequently reached the native Core service. The nested
+sandbox, original failing tests, runtime isolation, workspace trust and task
+consent passed. Core rejected the first request at admission. The 12 GiB guest
+had 11,116,531,712 available bytes and the model required 11,274,289,152.
+The editor profile now assigns 12.5 GiB to the guest within the existing 13 GiB
+QEMU hard limit and 14 GiB host admission floor. The headless guest uses 12 GiB.
+[Editor admission receipt](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44447437976).
+
 ### Connection-bound native execution candidate
 
 The native CPU path now requests a connection-bound session from the core.

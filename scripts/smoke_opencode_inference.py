@@ -56,14 +56,20 @@ def require(value, reason):
         raise ValueError(reason)
 
 
-def trial_profile(model_profile=MODEL, inference_backend='torch'):
+def trial_profile(model_profile=MODEL, inference_backend='torch', *, editor_ui=False):
     """Closed source/resource choices; the larger trial never changes the default."""
     require(model_profile in MODEL_PROFILES, 'unknown_model_profile')
     require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    require(not editor_ui or inference_backend == 'llama_cpp_bf16_v1', 'editor_requires_native')
     if inference_backend != 'torch':
         require(model_profile == LARGE_MODEL, 'native_backend_requires_qwen4b')
         require(type(NATIVE_CORE) is str and re.fullmatch('[0-9a-f]{40}', NATIVE_CORE), 'native_core_not_pinned')
-        return dict(trial_profile(model_profile), core_revision=NATIVE_CORE,
+        profile = trial_profile(model_profile)
+        if editor_ui:
+            # The rendered editor and OpenCode share this guest with the model.
+            # Keep the existing outer hard ceiling and the Core admission test.
+            profile['guest_memory_mib'] += 512
+        return dict(profile, core_revision=NATIVE_CORE,
                     inference_backend=inference_backend, native_source_commit=NATIVE_SOURCE)
     if model_profile == MODEL:
         return dict(model_profile=MODEL, core_revision=CORE, guest_memory_mib=6144,
@@ -926,8 +932,8 @@ def boot_running(state):
         and int(state['MainPID']) > 0
 
 
-def qemu_command(tools, scratch, firmware=None, model_profile=MODEL, inference_backend='torch'):
-    profile = trial_profile(model_profile, inference_backend)
+def qemu_command(tools, scratch, firmware=None, model_profile=MODEL, inference_backend='torch', *, editor_ui=False):
+    profile = trial_profile(model_profile, inference_backend, editor_ui=editor_ui)
     firmware = firmware or tools / 'root/usr/share/seabios/vgabios-stdvga.bin'
     return [tools / 'bin/qemu-system-x86_64', '-name', 'volparossa-opencode-inference', '-no-user-config', '-nodefaults',
         '-machine', 'q35,accel=kvm', '-cpu', 'host', '-smp', '2', '-m', str(profile['guest_memory_mib']),
@@ -993,7 +999,8 @@ def validate_bundle(path, model_profile=MODEL, inference_backend='torch'):
 
 def execute(args):
     backend = getattr(args, 'inference_backend', 'torch')
-    profile = trial_profile(getattr(args, 'model_profile', MODEL), backend)
+    editor_ui = getattr(args, 'editor_ui', False)
+    profile = trial_profile(getattr(args, 'model_profile', MODEL), backend, editor_ui=editor_ui)
     os.umask(0o077)
     require(args.yes and os.getuid() > 0, 'explicit_unprivileged_execution')
     new_output(args.output)
@@ -1015,9 +1022,7 @@ def execute(args):
              '--verify', '--output', canonical(args.tools)])
         host_tools = None
     manifest = validate_bundle(args.bundle, profile['model_profile'], backend)
-    editor_ui = getattr(args, 'editor_ui', False)
-    require(manifest.get('frontend') == ('vscodium' if editor_ui else None)
-            and (not editor_ui or backend == 'llama_cpp_bf16_v1'), 'input_frontend')
+    require(manifest.get('frontend') == ('vscodium' if editor_ui else None), 'input_frontend')
     # The host executes only this reviewed runner; guest code remains in KVM.
     require(manifest['files']['code/scripts/smoke_opencode_inference.py']['sha256'] == digest(Path(__file__)),
             'runner_differs_from_captured_input')
@@ -1106,7 +1111,7 @@ def execute(args):
         receipt['host_available_bytes_at_launch'] = available
         qemu = qemu_command(args.tools, scratch,
                             Path('/usr/share/seabios/vgabios-stdvga.bin') if host_tools is not None else None,
-                            profile['model_profile'], backend)
+                            profile['model_profile'], backend, editor_ui=editor_ui)
         run(['systemd-run', '--user', '--quiet', '--unit=' + name, '--property=Type=exec',
             '--property=RemainAfterExit=yes',
             '--property=MemoryMax=' + str(profile['qemu_memory_bytes']), '--property=MemorySwapMax=0',

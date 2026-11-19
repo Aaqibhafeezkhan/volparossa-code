@@ -44,6 +44,18 @@ class EditorProof(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'editor_requires_native'):
             trial.task_arguments('torch', True)
 
+    def test_editor_ram_is_bounded_inside_the_same_host_resource_ceiling(self):
+        native = 'llama_cpp_bf16_v1'
+        headless = trial.trial_profile(trial.LARGE_MODEL, native)
+        profile = trial.trial_profile(trial.LARGE_MODEL, native, editor_ui=True)
+        self.assertEqual(headless['guest_memory_mib'], 12288)
+        self.assertEqual(profile, dict(headless, guest_memory_mib=12800))
+        command = trial.qemu_command(Path('/tools'), Path('/scratch'), model_profile=trial.LARGE_MODEL,
+                                     inference_backend=native, editor_ui=True)
+        self.assertEqual(command[command.index('-m') + 1], str(profile['guest_memory_mib']))
+        with self.assertRaisesRegex(ValueError, 'editor_requires_native'):
+            trial.trial_profile(trial.LARGE_MODEL, 'torch', editor_ui=True)
+
     def test_headless_result_cannot_satisfy_the_editor_acceptance_and_conversely(self):
         native = 'llama_cpp_bf16_v1'
         profile = trial.trial_profile(trial.LARGE_MODEL, native)
