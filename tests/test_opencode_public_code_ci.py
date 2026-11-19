@@ -25,6 +25,13 @@ class Contracts(unittest.TestCase):
             with patch.object(CI, 'CORE', invalid), self.assertRaisesRegex(ValueError, 'core_fixture_not_pinned'):
                 CI.core_pin()
 
+    def test_workbench_pins_are_separate_and_unknown_frontends_are_rejected(self):
+        with patch.dict(os.environ, {'VOLPAROSSA_PUBLIC_WORKBENCH': 'true'}):
+            self.assertEqual(CI.core_pin(), CI.WORKBENCH_CORE)
+            self.assertEqual(CI.driver_source(), (CI.WORKBENCH_DRIVER, CI.WORKBENCH_TREE))
+        with patch.dict(os.environ, {'VOLPAROSSA_PUBLIC_WORKBENCH': 'arbitrary'}), self.assertRaises(ValueError):
+            CI.driver_source()
+
     def test_source_binds_different_workflow_and_driver_commits_without_branch_substitution(self):
         workflow, core_revision = 'a' * 40, 'b' * 40
         calls = []
@@ -147,7 +154,7 @@ class Contracts(unittest.TestCase):
         for forbidden in ('opencode_ci_build.sh', 'smoke_opencode_inference.py execute', 'build_opencode_runtime.py',
                           'runtime/opencode', 'ACTIONS_RUNTIME_TOKEN', 'curl |', 'pull_request:'):
             self.assertNotIn(forbidden, workflow)
-        self.assertLess(workflow.index('public_code_ci.py source'), workflow.index('apt-get update'))
+        self.assertLess(workflow.index('public_code_ci.py source'), workflow.index('Prepare the signed Ubuntu archive'))
         # Parse just literal run blocks as shell; no workflow/tool action runs.
         lines = workflow.splitlines()
         for index, line in enumerate(lines):

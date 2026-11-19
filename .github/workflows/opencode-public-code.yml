@@ -8,6 +8,12 @@ on:
         type: string
         required: true
 
+      vscodium_workbench:
+        description: Drive the installed VSCodium editor through enrollment, edit approval and the owner test
+        type: boolean
+        required: false
+        default: false
+
 permissions:
   contents: read
 
@@ -21,6 +27,7 @@ jobs:
     timeout-minutes: 120
     env:
       EXPECTED_CODE_SHA: ${{ inputs.expected_code_sha }}
+      VOLPAROSSA_PUBLIC_WORKBENCH: ${{ inputs.vscodium_workbench && 'true' || 'false' }}
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,12 +46,14 @@ jobs:
           persist-credentials: false
       - name: Bind clean workflow, immutable driver and core sources
         run: python3 -B scripts/public_code_ci.py source --expected-code "$EXPECTED_CODE_SHA"
+      - name: Prepare the signed Ubuntu archive
+        id: ubuntu_archive
+        uses: VOLPAROSSA/.github/actions/ubuntu-archive@0b26926c9893b01713aded0d331efb1333ddf0c0
       - name: Install official tools on this disposable GitHub host only
         run: |
           set -euo pipefail
           python3 -B scripts/public_code_ci.py guard
-          sudo -n env DEBIAN_FRONTEND=noninteractive apt-get update
-          sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+          sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -c '${{ steps.ubuntu_archive.outputs.config }}' install --yes --no-install-recommends \
             build-essential cmake git libevent-dev pkg-config qemu-system-x86 qemu-utils \
             cloud-image-utils openssh-client curl jq util-linux
           test -c /dev/kvm
@@ -72,7 +81,7 @@ jobs:
           chmod 0600 "$image"
           printf '%s  %s\n' '184761b0dad0f9ace02f9298050ca96ce3caa39a461a47706d47ff9698b59933918b91b40177fbd4d392f6446af8b4d18ecb94caca988169b19641606bf34003' "$image" | sha512sum --check --strict -
           printf 'VOLPAROSSA_PUBLIC_CODE_IMAGE=%s\n' "$image" >>"$GITHUB_ENV"
-      - name: Capture exact public driver and Node only
+      - name: Capture the selected public driver and its pinned runtime
         run: python3 -B scripts/public_code_ci.py pack
       - name: Run the core-owned real peer topology once
         run: |

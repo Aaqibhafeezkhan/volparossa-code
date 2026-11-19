@@ -115,7 +115,11 @@ def pack(args):
 def pack_proposal(args):
     output_path(args.output, 'public-code-proposal-inputs')
     workbench = getattr(args, 'vscodium_workbench', False)
-    source = blobs(args.code_revision, WORKBENCH_SOURCES if workbench else PROPOSAL_SOURCES)
+    sources = WORKBENCH_SOURCES if workbench else PROPOSAL_SOURCES
+    if not workbench and args.code_revision == 'f27576ebd7e7ded2f1319186f34df87f48e970d7':
+        # Its private session lived in private-conversation.cjs at this immutable revision.
+        sources = tuple(name for name in sources if name != 'src/private-native-session.cjs')
+    source = blobs(args.code_revision, sources)
     node_license = args.node.parent.parent / 'LICENSE'
     for candidate, expected in ((args.node, NODE), (node_license, NODE_LICENSE)):
         require(owned_file(candidate, 200 * 1024**2).st_size == expected[0]
