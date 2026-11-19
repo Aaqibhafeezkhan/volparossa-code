@@ -118,6 +118,15 @@ The editor profile now assigns 12.5 GiB to the guest within the existing 13 GiB
 QEMU hard limit and 14 GiB host admission floor. The headless guest uses 12 GiB.
 [Editor admission receipt](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44447437976).
 
+With that memory the next editor run passed admission and finished a 143-token
+generation for a 4,997-token prompt at 595.56 seconds. Core reported its
+600-second deadline during final verification. The fixture remained unverified.
+The editor VM now assigns two vCPUs to the existing two-thread Core service and
+a third to the editor and its owner controls. After consent the driver samples
+persistent approval dialogs every 1.5 seconds and skips trust-page scans. The
+600-second inference and 2,400-second owner-task deadlines still apply.
+[Editor generation receipt](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44449017418).
+
 ### Connection-bound native execution candidate
 
 The native CPU path now requests a connection-bound session from the core.

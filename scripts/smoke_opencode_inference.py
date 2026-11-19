@@ -69,16 +69,17 @@ def trial_profile(model_profile=MODEL, inference_backend='torch', *, editor_ui=F
             # The rendered editor and OpenCode share this guest with the model.
             # Keep the existing outer hard ceiling and the Core admission test.
             profile['guest_memory_mib'] += 512
+            profile['guest_vcpus'] = 3
         return dict(profile, core_revision=NATIVE_CORE,
                     inference_backend=inference_backend, native_source_commit=NATIVE_SOURCE)
     if model_profile == MODEL:
-        return dict(model_profile=MODEL, core_revision=CORE, guest_memory_mib=6144,
+        return dict(model_profile=MODEL, core_revision=CORE, guest_memory_mib=6144, guest_vcpus=2,
                     core_memory_bytes=5 * GIB, qemu_memory_bytes=7 * GIB,
                     host_available_bytes=8 * GIB, provision_budget_bytes=5 * GIB,
                     scratch_gib=18, memory_failure='host_available_memory_below_8GiB')
     require(type(LARGE_CORE) is str and re.fullmatch('[0-9a-f]{40}', LARGE_CORE),
             'larger_core_not_pinned')
-    return dict(model_profile=LARGE_MODEL, core_revision=LARGE_CORE, guest_memory_mib=12288,
+    return dict(model_profile=LARGE_MODEL, core_revision=LARGE_CORE, guest_memory_mib=12288, guest_vcpus=2,
                 core_memory_bytes=11 * GIB, qemu_memory_bytes=13 * GIB,
                 host_available_bytes=14 * GIB, provision_budget_bytes=20 * GIB,
                 scratch_gib=40, memory_failure='host_available_memory_below_14GiB')
@@ -547,11 +548,14 @@ def run_native_build(limit, report):
     # no temporary handshake path can escape or weaken the all-units-empty gate.
 
 
-def start(name, command, limit, seconds, public_source_build=False):
+def start(name, command, limit, seconds, public_source_build=False, *, editor_core=False):
     require(not public_source_build or name == NATIVE_UNIT, 'native_build_network_scope')
     editor_ui = name == TASK_UNIT and '--editor-ui' in command
     editor_properties = (module(INPUT / 'code/scripts/opencode_editor.py', 'editor_task_service').service_properties()
                          if editor_ui else [])
+    if editor_core:
+        require(name == CORE_UNIT, 'editor_core_unit')
+        editor_properties.append('--property=CPUAffinity=0 1')
     (BASE / (name + '.log')).touch(mode=0o600)
     run(['sudo', '-n', 'systemd-run', '--quiet', '--unit=' + name, '--property=Type=exec',
          '--property=RemainAfterExit=yes', '--property=User=vpci', '--property=Group=vpci',
@@ -748,13 +752,17 @@ def guest(args):
             '--model-root', str(BASE / 'ml/model'), '--model-profile', profile['model_profile'],
             '--threads', '2', '--max-seconds', '600', '--execute',
             *(['--native-backend-root', str(BASE / 'ml/native-backend'), '--native-backend-sha256',
-               report['native_backend']['manifest_sha256']] if backend != 'torch' else [])], profile['core_memory_bytes'], 2700)
+               report['native_backend']['manifest_sha256']] if backend != 'torch' else [])], profile['core_memory_bytes'], 2700,
+              editor_core=manifest.get('frontend') == 'vscodium')
         deadline = time.monotonic() + 15
         while not (BASE / 'private.sock').exists() and time.monotonic() < deadline:
             time.sleep(.1)
         state = properties(CORE_UNIT)
         require(state.get('ActiveState') == 'active' and (BASE / 'private.sock').is_socket(), 'core_not_ready')
         require(int(state['MainPID']) > 0, 'core_process')
+        if manifest.get('frontend') == 'vscodium':
+            report['core_vcpu_affinity'] = sorted(os.sched_getaffinity(int(state['MainPID'])))
+            require(report['core_vcpu_affinity'] == [0, 1], 'editor_core_affinity')
         report['phase'] = 'opencode-task'
         created.append(TASK_UNIT)
         if backend != 'torch':
@@ -936,7 +944,7 @@ def qemu_command(tools, scratch, firmware=None, model_profile=MODEL, inference_b
     profile = trial_profile(model_profile, inference_backend, editor_ui=editor_ui)
     firmware = firmware or tools / 'root/usr/share/seabios/vgabios-stdvga.bin'
     return [tools / 'bin/qemu-system-x86_64', '-name', 'volparossa-opencode-inference', '-no-user-config', '-nodefaults',
-        '-machine', 'q35,accel=kvm', '-cpu', 'host', '-smp', '2', '-m', str(profile['guest_memory_mib']),
+        '-machine', 'q35,accel=kvm', '-cpu', 'host', '-smp', str(profile['guest_vcpus']), '-m', str(profile['guest_memory_mib']),
         '-device', 'VGA,id=video0,bus=pcie.0,addr=0x1,romfile=' + str(firmware),
         '-drive', 'if=virtio,format=qcow2,file=' + str(scratch / 'overlay.qcow2'),
         '-drive', 'if=virtio,format=raw,readonly=on,file=' + str(scratch / 'seed.img'),
@@ -1004,6 +1012,8 @@ def execute(args):
     os.umask(0o077)
     require(args.yes and os.getuid() > 0, 'explicit_unprivileged_execution')
     new_output(args.output)
+    if editor_ui:
+        require(len(os.sched_getaffinity(0)) >= profile['guest_vcpus'], 'editor_host_cpus')
     require(available_memory() >= profile['host_available_bytes'], profile['memory_failure'])
     require(os.access('/dev/kvm', os.R_OK | os.W_OK), 'host_kvm_unavailable')
     canonical(args.image)
@@ -1049,7 +1059,7 @@ def execute(args):
     receipt = dict(version=1, kind='opencode-inference-vm', passed=False, phase='prepare', failure=None,
         core_revision=profile['core_revision'], model_profile=profile['model_profile'],
         bundle_sha256=digest(args.bundle), bundle_bytes=args.bundle.stat().st_size,
-        code_contains_uncommitted_changes=True, memory_mib=profile['guest_memory_mib'], cpus=2, vm_started=False,
+        code_contains_uncommitted_changes=True, memory_mib=profile['guest_memory_mib'], cpus=profile['guest_vcpus'], vm_started=False,
         qemu_joined=False, scratch_removed=False, host_observed_routes_dns_unchanged=None,
         host_raw_route_dns_bytes_unchanged=None, host_observation_scope='proc_visible_routes_and_resolv_conf',
         host_firewall_modified=False, actual_model_execution_proven=False,

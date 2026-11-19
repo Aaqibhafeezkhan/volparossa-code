@@ -139,7 +139,7 @@ class Contracts(unittest.TestCase):
 
     def test_profiles_are_closed_and_default_resources_are_unchanged(self):
         self.assertEqual(TRIAL.trial_profile(), dict(model_profile='qwen3-0.6b-v1',
-            core_revision='6a517b576baa17e7329661ee0476d1848081d114', guest_memory_mib=6144,
+            core_revision='6a517b576baa17e7329661ee0476d1848081d114', guest_memory_mib=6144, guest_vcpus=2,
             core_memory_bytes=5 * TRIAL.GIB, qemu_memory_bytes=7 * TRIAL.GIB,
             host_available_bytes=8 * TRIAL.GIB, provision_budget_bytes=5 * TRIAL.GIB,
             scratch_gib=18, memory_failure='host_available_memory_below_8GiB'))

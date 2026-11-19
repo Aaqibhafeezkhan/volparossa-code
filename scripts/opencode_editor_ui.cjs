@@ -20,13 +20,13 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 // Only UI labels, geometry, closed counters and one-shot action text enter memory.
-const STATE = `(() => {
+const STATE = `(observeTrust => {
   const visible = e => e && e.getBoundingClientRect().width && e.getBoundingClientRect().height;
   const text = e => (e?.innerText || '').replaceAll('\\u00a0', ' ');
   const point = e => { const r=e.getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; };
-  const links = [...document.querySelectorAll('.part.banner a[href="command:workbench.trust.manage"]')].filter(visible);
-  const quick = [...document.querySelectorAll('.quick-input-widget')].find(visible);
-  const focused = quick?.querySelector('.monaco-list-row.focused .label-name');
+  const links = observeTrust ? [...document.querySelectorAll('.part.banner a[href="command:workbench.trust.manage"]')].filter(visible) : [];
+  const quick = observeTrust && [...document.querySelectorAll('.quick-input-widget')].find(visible);
+  const focused = quick && quick.querySelector('.monaco-list-row.focused .label-name');
   const dialogs = [...document.querySelectorAll('.monaco-dialog-box')].filter(visible).map(d=>({
     message:[text(d.querySelector('.dialog-message-text')),text(d.querySelector('.dialog-message-detail'))].filter(Boolean).join('\\n\\n'),
     buttons:[...d.querySelectorAll('.dialog-buttons .monaco-button')].filter(visible).map(b=>({label:text(b).trim(),...point(b)}))}));
@@ -35,14 +35,16 @@ const STATE = `(() => {
   const head = lines.indexOf('VOLPAROSSA — OpenCode turn finished');
   const checked = head >= 0 && lines.slice(head+1,head+7).some(x=>/^Owner-selected check: passed; checks: [1-4];/.test(x));
   const calls = head >= 0 && lines[head+1]?.match(/^Completed native tools: reads (\\d+), edits (\\d+), shell commands (\\d+)\\.$/);
-  const trust = text(document.body).slice(0,16384);
+  const trust = observeTrust ? text(document.body).slice(0,16384) : '';
   return {manage:links.length===1?point(links[0]):null, restricted:trust.includes('Restricted Mode is intended'),
     trustPage:trust.includes('In Restricted Mode') && trust.includes('Trusted Folders & Workspaces'),
     granted:trust.includes('You trust this folder'), paletteLabel:text(focused), dialogs,
     model:head>=0 && lines[head+2]==='Model: qwen3-4b-instruct-2507-v1', checked, tools:calls?calls.slice(1).map(Number):null,
     failed:[...document.querySelectorAll('.notification-list-item-message')].filter(visible)
       .some(e=>text(e).includes('VOLPAROSSA could not complete this operation.'))};
-})()`;
+})`;
+const STARTUP_STATE = STATE + '(true)';
+const TASK_STATE = STATE + '(false)';
 
 function decision(message, project, count) {
   if (typeof message !== 'string' || message.length > 16384 || count >= 12) return null;
@@ -85,24 +87,24 @@ async function button(cdp, dialog, label) {
 async function drive(cdp, project, evidence, stopAtConsent = false) {
   const start = Date.now();
   // A fresh editor profile must grant trust to the only disposable folder.
-  const initial = await until(cdp, STATE, state => state.manage !== null, start + 60000, 'trust_banner');
+  const initial = await until(cdp, STARTUP_STATE, state => state.manage !== null, start + 60000, 'trust_banner');
   await cdp.click(initial.manage);
-  await until(cdp, STATE, state => state.trustPage, Date.now()+15000, 'trust_page');
+  await until(cdp, STARTUP_STATE, state => state.trustPage, Date.now()+15000, 'trust_page');
   await cdp.key('Enter', 'Enter', 13, 2);
-  await until(cdp, STATE, state => state.granted, Date.now()+15000, 'trust_grant');
+  await until(cdp, STARTUP_STATE, state => state.granted, Date.now()+15000, 'trust_grant');
   evidence.workspace_trust_granted = true;
   await cdp.key('Escape','Escape',27);
-  await until(cdp, STATE, state => !state.trustPage, Date.now()+15000, 'trust_close');
+  await until(cdp, STARTUP_STATE, state => !state.trustPage, Date.now()+15000, 'trust_close');
   const palette = await openPalette(cdp, Date.now()+30000, startupObservation());
   await cdp.click(palette.quick); await cdp.key('a','KeyA',65,2);
   await cdp.call('Input.insertText', {text:'>'+LABEL});
-  await until(cdp, STATE, state => state.paletteLabel === LABEL, Date.now()+15000, 'command_palette');
+  await until(cdp, STARTUP_STATE, state => state.paletteLabel === LABEL, Date.now()+15000, 'command_palette');
   await cdp.key('Enter','Enter',13);
   const prompt = await until(cdp, undefined, v => v.quick?.title === 'VOLPAROSSA OpenCode task',
     Date.now()+30000, 'task_input');
   await cdp.click(prompt.quick); await cdp.call('Input.insertText', {text:TASK});
   await cdp.key('Enter','Enter',13);
-  const one = await until(cdp, STATE, v => v.dialogs.length === 1, Date.now()+15000, 'consent');
+  const one = await until(cdp, STARTUP_STATE, v => v.dialogs.length === 1, Date.now()+15000, 'consent');
   const consent = one.dialogs[0];
   assert.ok(consent.message.startsWith(`Allow an OpenCode coding task in ${project}?`)
     && consent.message.includes('no public-peer or Internet access')
@@ -114,7 +116,7 @@ async function drive(cdp, project, evidence, stopAtConsent = false) {
   let previous = consent.message;
   const limit = Date.now() + 2410000;
   while (Date.now() < limit) {
-    const view = await cdp.snapshot(STATE);
+    const view = await cdp.snapshot(TASK_STATE);
     assert.ok(!view.failed, 'editor_failed');
     if (view.checked && view.tools) {
       assert.ok(view.model, 'model_profile');
@@ -135,7 +137,9 @@ async function drive(cdp, project, evidence, stopAtConsent = false) {
       evidence.approvals++; evidence['approved_'+kind]++;
     }
     previous = dialog?.message ?? null;
-    await pause(200);
+    // The model can spend minutes on a turn. Leave CPU time to inference
+    // between appearances of the persistent owner approval dialogs.
+    await pause(1500);
   }
   throw Error('model_deadline');
 }

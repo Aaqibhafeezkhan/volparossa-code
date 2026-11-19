@@ -117,7 +117,7 @@ def service_properties():
     read_only = ['/usr', '/etc/passwd', '/etc/group', '/etc/ld.so.cache', '/etc/fonts',
                  str(EDITOR), str(CODE), str(INPUT / 'runtime'), str(BASE / 'private.sock') + ':' + str(socket_path)]
     return ['--property=RootDirectory=' + str(root), '--property=RootEphemeral=yes', '--property=MountAPIVFS=yes', '--property=PrivateDevices=yes',
-            '--property=CapabilityBoundingSet=', '--property=ProtectProc=invisible', '--property=ProtectSystem=strict',
+            '--property=CPUAffinity=2', '--property=CapabilityBoundingSet=', '--property=ProtectProc=invisible', '--property=ProtectSystem=strict',
             '--property=ReadOnlyPaths=/sys', '--property=ProtectControlGroups=yes',
             '--property=TemporaryFileSystem=/tmp:mode=1777', '--property=BindReadOnlyPaths=' + ' '.join(read_only),
             '--property=BindPaths=' + str(project_parent), '--property=ReadWritePaths=' + str(project_parent)]
@@ -129,15 +129,14 @@ def inside():
     require(int(next(v.split()[1] for v in Path('/proc/self/status').read_text().splitlines()
                      if v.startswith('CapEff:')), 16) == 0, 'editor_capabilities')
     interpreter = Path('/usr/bin/python3').resolve()
-    observed = {'interpreter_root_owned': interpreter.stat().st_uid == 0,
+    observed = {'editor_on_third_vcpu': os.sched_getaffinity(0) == {2},
+                'interpreter_root_owned': interpreter.stat().st_uid == 0,
                 'system_runtime_read_only': bool(os.statvfs('/usr').f_flag & os.ST_RDONLY),
                 'core_socket_mounted': (UI.parent / 'private.sock').is_socket(),
                 'model_files_hidden': not (BASE / 'ml').exists(), 'core_source_hidden': not Path('/home/vpci/source').exists(),
                 'guest_ssh_hidden': not Path('/home/vpci/.ssh').exists()}
     (UI / 'mounts.json').write_text(json.dumps(observed))
-    require(interpreter.stat().st_uid == 0 and os.statvfs('/usr').f_flag & os.ST_RDONLY
-            and (UI.parent / 'private.sock').is_socket() and not (BASE / 'ml').exists()
-            and not Path('/home/vpci/source').exists() and not Path('/home/vpci/.ssh').exists(), 'editor_mounts')
+    require(all(observed.values()), 'editor_mounts')
     profile = UI / 'profile'
     (profile / 'User').mkdir(parents=True, mode=0o700)
     extensions = UI / 'extensions'

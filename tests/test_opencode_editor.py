@@ -28,6 +28,7 @@ class EditorProof(unittest.TestCase):
             self.assertIn('--property=ProtectSystem=strict', options)
             self.assertIn('--property=ProtectProc=invisible', options)
             self.assertIn('--property=ReadOnlyPaths=/sys', options)
+            self.assertIn('--property=CPUAffinity=2', options)
             self.assertNotIn('--property=ProtectKernelTunables=yes', options)
             self.assertIn('--property=BindPaths=' + str(selected), options)
             files = next(x.removeprefix('--property=BindReadOnlyPaths=') for x in options if x.startswith('--property=BindReadOnlyPaths=')).split()
@@ -49,10 +50,11 @@ class EditorProof(unittest.TestCase):
         headless = trial.trial_profile(trial.LARGE_MODEL, native)
         profile = trial.trial_profile(trial.LARGE_MODEL, native, editor_ui=True)
         self.assertEqual(headless['guest_memory_mib'], 12288)
-        self.assertEqual(profile, dict(headless, guest_memory_mib=12800))
+        self.assertEqual(profile, dict(headless, guest_memory_mib=12800, guest_vcpus=3))
         command = trial.qemu_command(Path('/tools'), Path('/scratch'), model_profile=trial.LARGE_MODEL,
                                      inference_backend=native, editor_ui=True)
         self.assertEqual(command[command.index('-m') + 1], str(profile['guest_memory_mib']))
+        self.assertEqual(command[command.index('-smp') + 1], '3')
         with self.assertRaisesRegex(ValueError, 'editor_requires_native'):
             trial.trial_profile(trial.LARGE_MODEL, 'torch', editor_ui=True)
 
