@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import signal
 import socket
 import stat
@@ -171,44 +172,116 @@ class Group:
         return value
 
 
+FAILURE_NAME = 'task-holder-failure.json'
+FAILURE_PHASES = ('owner_socket', 'owner_identity', 'child_start', 'child_wait', 'receipt', 'ready', 'release')
+FAILURE_KINDS = ('timeout', 'permission', 'missing', 'system', 'contract', 'subprocess', 'owner_closed')
+
+
+def failure_kind(error):
+    if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+        return 'timeout'
+    if isinstance(error, PermissionError):
+        return 'permission'
+    if isinstance(error, FileNotFoundError):
+        return 'missing'
+    if isinstance(error, OSError):
+        return 'system'
+    if isinstance(error, subprocess.SubprocessError):
+        return 'subprocess'
+    if isinstance(error, ValueError) and str(error) == 'task_holder_owner_closed':
+        return 'owner_closed'
+    return 'contract'
+
+
+def failure_detail(path, nonce):
+    """Only a closed operational diagnostic. It cannot satisfy the ready/release protocol."""
+    try:
+        value = json.loads(receipt_bytes(path))
+        require(type(value) is dict and set(value) == {'version', 'nonce', 'phase', 'kind', 'errno', 'child_status'}
+                and type(value['version']) is int and value['version'] == 1 and value['nonce'] == nonce
+                and value['phase'] in FAILURE_PHASES and value['kind'] in FAILURE_KINDS
+                and (value['errno'] is None or type(value['errno']) is int and 1 <= value['errno'] <= 4095)
+                and (value['child_status'] is None or type(value['child_status']) is int
+                     and -64 <= value['child_status'] <= 255))
+        return {key: value[key] for key in ('phase', 'kind', 'errno', 'child_status')}
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def wait_for_task(child, channel, deadline):
+    pidfd = os.pidfd_open(child.pid)
+    try:
+        with selectors.DefaultSelector() as watch:
+            watch.register(pidfd, selectors.EVENT_READ)
+            watch.register(channel, selectors.EVENT_READ)
+            events = watch.select(remaining(deadline))
+            if not events:
+                raise TimeoutError('task_holder_deadline')
+            if any(key.fileobj == pidfd for key, _ in events) or child.poll() is not None:
+                return child.wait()
+            # No release frame is valid until the joined child's receipt has
+            # been sent. EOF also revokes ownership while an editor is working.
+            require(channel.recv(1, socket.MSG_PEEK), 'task_holder_owner_closed')
+            raise ValueError('task_holder_premature_release')
+    finally:
+        os.close(pidfd)
+
+
 def hold(command, path, receipt, nonce, deadline, parent_pid):
-    """Internal seam for inert child tests; the executable CLI never accepts argv."""
+    """Connect to the authenticated observation owner before starting any model/editor work."""
     remaining(deadline)
     binding('ready', nonce, 0, None)
-    child = subprocess.Popen(command)
+    child = None
     status = None
-    try:
-        status = child.wait(timeout=remaining(deadline))
+    phase = 'owner_socket'
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
         try:
-            digest = hashlib.sha256(receipt_bytes(receipt)).hexdigest()
-        except (OSError, ValueError, TypeError):
-            # Preserve the joined child's original status even when receipt
-            # ownership, metadata or readability fails. Null is no task proof.
-            digest = None
-        info = path.lstat()
-        require(stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
-                and stat.S_IMODE(info.st_mode) == 0o600, 'task_holder_socket')
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+            directory = path.parent.lstat()
+            require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == os.getuid()
+                    and stat.S_IMODE(directory.st_mode) == 0o700, 'task_holder_directory')
+            info = path.lstat()
+            require(stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
+                    and stat.S_IMODE(info.st_mode) == 0o600, 'task_holder_socket')
             channel.settimeout(remaining(deadline))
             channel.connect(str(path))
+            phase = 'owner_identity'
             peer(channel, parent_pid)
+            phase = 'child_start'
+            child = subprocess.Popen(command)
+            phase = 'child_wait'
+            status = wait_for_task(child, channel, deadline)
+            phase = 'receipt'
+            try:
+                digest = hashlib.sha256(receipt_bytes(receipt)).hexdigest()
+            except (OSError, ValueError, TypeError):
+                digest = None
+            phase = 'ready'
             send_frame(channel, binding('ready', nonce, status, digest), deadline)
+            phase = 'release'
             require(receive_frame(channel, deadline) == binding('release', nonce, status, digest),
                     'task_holder_release')
-        return status if status != 0 or digest is not None else 1
-    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
-        # An observation failure cannot turn a failed task into a success or
-        # overwrite its actual nonzero/signal status. A successful task remains
-        # non-accepted when the bounded release protocol fails.
-        return status if status not in (None, 0) else 1
-    finally:
-        if child.poll() is None:
-            child.terminate()
+            return status if status != 0 or digest is not None else 1
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
+            number = getattr(error, 'errno', None)
+            detail = dict(version=1, nonce=nonce, phase=phase, kind=failure_kind(error),
+                          errno=number if type(number) is int and 1 <= number <= 4095 else None,
+                          child_status=status)
             try:
-                child.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                child.wait(timeout=2)
+                fd = os.open(path.with_name(FAILURE_NAME), os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                             os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+                with os.fdopen(fd, 'w') as output:
+                    json.dump(detail, output)
+            except OSError:
+                pass
+            return status if status not in (None, 0) else 1
+        finally:
+            if child is not None and child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=2)
 
 
 def main():

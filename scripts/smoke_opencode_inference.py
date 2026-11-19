@@ -598,13 +598,21 @@ def accept_task_holder(listener, holder, deadline, report):
 
 
 @contextmanager
-def record_task_failure(report):
+def record_task_failure(report, holder, root, nonce):
     try:
         yield
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         if 'editor_runtime' in report:
             from opencode_editor import failure_details
             report['task_exception'] = failure_details(error)
+            detail = holder.failure_detail(root / holder.FAILURE_NAME, nonce)
+            if detail is not None:
+                report['task_holder_failure'] = detail
+            if 'task_exit_status' not in report and 'task_unit_before_ready' not in report:
+                try:
+                    report['task_unit_before_ready'] = closed_native_unit(properties(TASK_UNIT))
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    pass
         raise
 
 
@@ -617,7 +625,7 @@ def run_native_task(profile, backend, report):
     owner_deadline = started + 2565 * 1_000_000_000
     task_root = PROJECTS if editor_ui else BASE
     path = task_root / holder.CONTROL
-    with record_task_failure(report), socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+    with record_task_failure(report, holder, task_root, nonce), socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(path))
         path.chmod(0o600)
         listener.listen(1)

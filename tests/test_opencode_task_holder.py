@@ -233,11 +233,59 @@ class Cases(unittest.TestCase):
         command = [sys.executable, '-B', '-c',
                    'import os,pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)',
                    str(pidfile)]
-        process = self.spawn(self.root / H.CONTROL, until=deadline(.3), command=command)
-        self.assertEqual(process.wait(timeout=3), 1)
+        path, server = self.listener()
+        process = self.spawn(path, until=deadline(.6), command=command)
+        channel, _ = server.accept()
+        with channel:
+            self.assertEqual(process.wait(timeout=3), 1)
+        detail = H.failure_detail(self.root / H.FAILURE_NAME, NONCE)
+        self.assertEqual(detail, dict(phase='child_wait', kind='timeout', errno=None, child_status=None))
         pid = int(pidfile.read_text())
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
+
+    def test_unavailable_owner_refuses_to_start_child(self):
+        marker = self.root / 'started'
+        command = [sys.executable, '-c', 'import pathlib, sys; pathlib.Path(sys.argv[1]).touch()', str(marker)]
+        process = self.spawn(self.root / H.CONTROL, command=command)
+        self.assertEqual(process.wait(timeout=3), 1)
+        self.assertFalse(marker.exists())
+        failure = self.root / H.FAILURE_NAME
+        self.assertEqual(H.failure_detail(failure, NONCE),
+                         dict(phase='owner_socket', kind='missing', errno=2, child_status=None))
+        self.assertIsNone(H.failure_detail(failure, '0' * 64))
+        data = json.loads(failure.read_bytes())
+        data['unexpected'] = 'private details'
+        failure.write_text(json.dumps(data))
+        self.assertIsNone(H.failure_detail(failure, NONCE))
+
+    def test_wrong_owner_pid_refuses_to_start_child(self):
+        path, _ = self.listener()
+        marker = self.root / 'started'
+        command = [sys.executable, '-c', 'import pathlib, sys; pathlib.Path(sys.argv[1]).touch()', str(marker)]
+        self.assertEqual(H.hold(command, path, self.receipt, NONCE, deadline(), os.getpid() + 1), 1)
+        self.assertFalse(marker.exists())
+        self.assertEqual(H.failure_detail(self.root / H.FAILURE_NAME, NONCE),
+                         dict(phase='owner_identity', kind='contract', errno=None, child_status=None))
+
+    def test_owner_disconnect_joins_active_child(self):
+        path, server = self.listener()
+        pidfile = self.root / 'child.pid'
+        command = [sys.executable, '-c',
+                   'import os,pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)',
+                   str(pidfile)]
+        process = self.spawn(path, until=deadline(12), command=command)
+        channel, _ = server.accept()
+        with channel:
+            until = time.monotonic() + 2
+            while not pidfile.exists() and time.monotonic() < until:
+                time.sleep(.01)
+            pid = int(pidfile.read_text())
+        self.assertEqual(process.wait(timeout=3), 1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        self.assertEqual(H.failure_detail(self.root / H.FAILURE_NAME, NONCE),
+                         dict(phase='child_wait', kind='owner_closed', errno=None, child_status=None))
 
     def test_receipt_permissions_links_and_bounds_are_real(self):
         self.assertEqual(H.receipt_bytes(self.receipt), b'{"inert":true}\n')
