@@ -6,6 +6,7 @@ import importlib.util
 import io
 import inspect
 import json
+import subprocess
 from pathlib import Path
 import tarfile
 import tempfile
@@ -112,9 +113,10 @@ class Contracts(unittest.TestCase):
             TRIAL.validate_task_selection(selected | {'model_profile': TRIAL.MODEL}, profile, 'llama_cpp_bf16_v1')
 
     def archive(self, root, name='code/example.cjs', *, payload=b'synthetic source\n', sha=None, link=False,
-                model_profile=TRIAL.MODEL, core_revision=None):
-        manifest = dict(core_revision=core_revision or TRIAL.trial_profile(model_profile)['core_revision'], model_profile=model_profile,
-            code_contains_uncommitted_changes=True, code_git_head_proves_migration=False,
+                model_profile=TRIAL.MODEL, core_revision=None, provenance=None):
+        if provenance is None:
+            provenance = dict(version=1, code_contains_uncommitted_changes=True, code_git_head_proves_migration=False)
+        manifest = dict(**provenance, core_revision=core_revision or TRIAL.trial_profile(model_profile)['core_revision'], model_profile=model_profile,
             files={name: dict(bytes=len(payload), sha256=sha or hashlib.sha256(payload).hexdigest(), mode=0o600)})
         path = Path(root) / 'input.tar.gz'
         with tarfile.open(path, 'w:gz') as archive:
@@ -136,6 +138,41 @@ class Contracts(unittest.TestCase):
             value = TRIAL.validate_bundle(self.archive(root))
             self.assertTrue(value['code_contains_uncommitted_changes'])
             self.assertFalse(value['code_git_head_proves_migration'])
+
+    def test_bundle_source_binding_compares_exact_captured_bytes_against_immutable_git(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = root / 'source'
+            repo.mkdir()
+            git = ['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid']
+            subprocess.run([*git, 'init', '--quiet'], check=True)
+            payload = b'public synthetic input'
+            (repo / 'source.cjs').write_bytes(payload)
+            (repo / 'alias.cjs').symlink_to('source.cjs')
+            subprocess.run([*git, 'add', '.'], check=True)
+            subprocess.run([*git, 'commit', '--quiet', '-m', 'fixture'], check=True)
+            revision = subprocess.check_output([*git, 'rev-parse', 'HEAD'], text=True).strip()
+            # The captured bytes can still be clean while the current workspace changes.
+            (repo / 'source.cjs').write_bytes(b'changed workspace')
+            candidates = [('code/source.cjs', payload, True),
+                          ('code/source.cjs', b'x' * len(payload), False),
+                          ('code/untracked.cjs', payload, False),
+                          ('code/alias.cjs', b'source.cjs', False)]
+            with patch.object(TRIAL, 'ROOT', repo):
+                for name, content, matches in candidates:
+                    for declared in (matches, not matches):
+                        binding = dict(version=2, code_base_revision=revision, code_files_match_base_revision=declared)
+                        archive = self.archive(root, name, payload=content, provenance=binding)
+                        if declared == matches:
+                            result = TRIAL.validate_bundle(archive)
+                            self.assertEqual(TRIAL.source_binding(result), {'code_files_match_base_revision': matches})
+                        else:
+                            with self.assertRaisesRegex(ValueError, 'bundle_code_source'):
+                                TRIAL.validate_bundle(archive)
+                for invalid in (dict(version=True), dict(version=3), dict(code_files_match_base_revision=1),
+                                dict(code_base_revision='HEAD'), dict(code_contains_uncommitted_changes=True)):
+                    with self.assertRaisesRegex(ValueError, 'input_authority'):
+                        TRIAL.source_binding(binding | invalid)
 
     def test_profiles_are_closed_and_default_resources_are_unchanged(self):
         self.assertEqual(TRIAL.trial_profile(), dict(model_profile='qwen3-0.6b-v1',

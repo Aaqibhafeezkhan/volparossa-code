@@ -270,6 +270,8 @@ class Contracts(unittest.TestCase):
         self.assertIn(guard, source)
         source = source.replace(selection, '').replace(guard, '')
         diagnostic_changes = (
+            ("model_profile=profile['model_profile'], actual_model_provisioned=False, **source_binding(manifest),",
+             "code_contains_uncommitted_changes=True, model_profile=profile['model_profile'], actual_model_provisioned=False,"),
             ('    provision_stage, provision_pins, provision_wait_timeout = None, None, False\n', ''),
             ("        provision_stage = 'pins'\n"
              "        model = module(private.ML / 'provision.py', 'opencode_model_provision')\n"

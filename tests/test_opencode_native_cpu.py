@@ -128,6 +128,10 @@ class Contracts(unittest.TestCase):
                 captured = json.loads((root / 'ci-inputs.json').read_text())
                 self.assertEqual(captured['inference_backend'], KIND)
                 self.assertEqual(captured['native_source_commit'], NATIVE.SOURCE)
+                parser.return_value = dict(manifest, version=2, code_files_match_base_revision=False)
+                with self.assertRaisesRegex(ValueError, 'input_source'):
+                    CI.capture(TRIAL.LARGE_MODEL, KIND)
+                parser.return_value = manifest
                 (root / 'ci-source.json').write_text(json.dumps(dict(source, inference_backend='torch')))
                 with self.assertRaisesRegex(ValueError, 'input_backend'):
                     CI.capture(TRIAL.LARGE_MODEL, KIND)
