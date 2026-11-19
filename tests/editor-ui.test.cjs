@@ -92,11 +92,13 @@ import native_coding_fixture as actual
 with tempfile.TemporaryDirectory(prefix='editor-ui-project-') as temporary:
  p=Path(temporary); p.chmod(0o700)
  assert ui.project(str(p))==p
+ inherited_umask=os.umask(0o077)
+ os.umask(inherited_umask)
  assert ui.prepare(p)==0
  assert set(x.name for x in p.iterdir())==set(ui.NAMES)
  assert (p/'arithmetic.py').read_text()==actual.ORIGINAL
  for name in ('editor_fixture.py','native_coding_fixture.py'):
-  assert (p/name).stat().st_mode & 0o777 == 0o444
+  assert (p/name).stat().st_mode & 0o777 == (0o444 & ~inherited_umask)
  try:ui.prepare(p)
  except ValueError:pass
  else:raise AssertionError('overwritten fixture')

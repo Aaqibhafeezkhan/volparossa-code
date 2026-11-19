@@ -200,7 +200,7 @@ class Cases(unittest.TestCase):
         # The inert runner exits normally with the negative result; production
         # main instead reproduces the signal on its own process, tested below.
         process.wait(timeout=3)
-        trial = SimpleNamespace(BASE=self.root, task_arguments=lambda _: ['fixed-node-command'],
+        trial = SimpleNamespace(BASE=self.root, task_arguments=lambda backend, editor_ui: ['fixed-node-command'],
             pwd=SimpleNamespace(getpwuid=lambda _: SimpleNamespace(pw_name='vpci')),
             run=lambda *a, **kw: SimpleNamespace(stdout='kvm\n'))
         spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _: None))
@@ -233,11 +233,59 @@ class Cases(unittest.TestCase):
         command = [sys.executable, '-B', '-c',
                    'import os,pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)',
                    str(pidfile)]
-        process = self.spawn(self.root / H.CONTROL, until=deadline(.3), command=command)
-        self.assertEqual(process.wait(timeout=3), 1)
+        path, server = self.listener()
+        process = self.spawn(path, until=deadline(.6), command=command)
+        channel, _ = server.accept()
+        with channel:
+            self.assertEqual(process.wait(timeout=3), 1)
+        detail = H.failure_detail(self.root / H.FAILURE_NAME, NONCE)
+        self.assertEqual(detail, dict(phase='child_wait', kind='timeout', errno=None, child_status=None))
         pid = int(pidfile.read_text())
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
+
+    def test_unavailable_owner_refuses_to_start_child(self):
+        marker = self.root / 'started'
+        command = [sys.executable, '-c', 'import pathlib, sys; pathlib.Path(sys.argv[1]).touch()', str(marker)]
+        process = self.spawn(self.root / H.CONTROL, command=command)
+        self.assertEqual(process.wait(timeout=3), 1)
+        self.assertFalse(marker.exists())
+        failure = self.root / H.FAILURE_NAME
+        self.assertEqual(H.failure_detail(failure, NONCE),
+                         dict(phase='owner_socket', kind='missing', errno=2, child_status=None))
+        self.assertIsNone(H.failure_detail(failure, '0' * 64))
+        data = json.loads(failure.read_bytes())
+        data['unexpected'] = 'private details'
+        failure.write_text(json.dumps(data))
+        self.assertIsNone(H.failure_detail(failure, NONCE))
+
+    def test_wrong_owner_pid_refuses_to_start_child(self):
+        path, _ = self.listener()
+        marker = self.root / 'started'
+        command = [sys.executable, '-c', 'import pathlib, sys; pathlib.Path(sys.argv[1]).touch()', str(marker)]
+        self.assertEqual(H.hold(command, path, self.receipt, NONCE, deadline(), os.getpid() + 1), 1)
+        self.assertFalse(marker.exists())
+        self.assertEqual(H.failure_detail(self.root / H.FAILURE_NAME, NONCE),
+                         dict(phase='owner_identity', kind='contract', errno=None, child_status=None))
+
+    def test_owner_disconnect_joins_active_child(self):
+        path, server = self.listener()
+        pidfile = self.root / 'child.pid'
+        command = [sys.executable, '-c',
+                   'import os,pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)',
+                   str(pidfile)]
+        process = self.spawn(path, until=deadline(12), command=command)
+        channel, _ = server.accept()
+        with channel:
+            until = time.monotonic() + 2
+            while not pidfile.exists() and time.monotonic() < until:
+                time.sleep(.01)
+            pid = int(pidfile.read_text())
+        self.assertEqual(process.wait(timeout=3), 1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        self.assertEqual(H.failure_detail(self.root / H.FAILURE_NAME, NONCE),
+                         dict(phase='child_wait', kind='owner_closed', errno=None, child_status=None))
 
     def test_receipt_permissions_links_and_bounds_are_real(self):
         self.assertEqual(H.receipt_bytes(self.receipt), b'{"inert":true}\n')
@@ -434,6 +482,35 @@ class Cases(unittest.TestCase):
         self.assertEqual(str(error), 'task_holder_exit')
         self.assertEqual(process.wait(timeout=3), 0)
 
+    def test_kernel_wait_observes_early_exit_without_a_ready_frame(self):
+        _, server = self.listener()
+        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(.2); raise SystemExit(37)'])
+        self.processes.append(child)
+        running = dict(ActiveState='active', SubState='running', MainPID=str(child.pid))
+        ended = dict(ActiveState='failed', SubState='failed', Result='exit-code', ExecMainStatus='37')
+        report = {}
+        with server, patch.object(T, 'properties', side_effect=[running, ended]) as query:
+            with self.assertRaisesRegex(ValueError, 'ended_before_ready'):
+                T.accept_task_holder(server, H, deadline(4), report)
+        self.assertEqual(query.call_count, 2)
+        self.assertEqual(report['task_unit_before_ready'], T.closed_native_unit(ended))
+        self.assertNotIn('task', report)
+        self.assertEqual(child.wait(timeout=1), 37)
+
+    def test_kernel_wait_performs_one_unit_query_while_a_real_child_works(self):
+        path, server = self.listener()
+        child = self.spawn(path, command=[sys.executable, '-c', 'import time; time.sleep(2.2)'])
+        running = dict(ActiveState='active', SubState='running', MainPID=str(child.pid))
+        with server, patch.object(T, 'properties', return_value=running) as query:
+            pid, connection = T.accept_task_holder(server, H, deadline(), {})
+            with connection:
+                H.peer(connection, pid)
+                ready = H.decode_ready(H.receive_frame(connection, deadline()), NONCE)
+                H.send_frame(connection, H.binding('release', NONCE, 0, ready['receipt_sha256']), deadline())
+        self.assertEqual(pid, child.pid)
+        query.assert_called_once_with(T.TASK_UNIT)
+        self.assertEqual(child.wait(timeout=3), 0)
+
     def test_receipt_hash_mismatch_releases_holder_but_refuses_task(self):
         report, error, process, _ = self.run_parent(receipt_changed=True)
         self.assertIsInstance(error, ValueError)
@@ -464,8 +541,9 @@ class Cases(unittest.TestCase):
         self.assertNotIn('task_arguments(', parent)
         main = inspect.getsource(H.main)
         self.assertIn("choices=('llama_cpp_bf16_v1',)", main)
-        self.assertIn("trial.task_arguments(args.inference_backend)", main)
-        self.assertIn("trial.BASE / 'task.json'", main)
+        self.assertIn("trial.task_arguments(args.inference_backend, args.editor_ui)", main)
+        self.assertIn('task_root = trial.PROJECTS if args.editor_ui else trial.BASE', main)
+        self.assertIn("task_root / 'task.json'", main)
         self.assertIn("'volparossa-alpha'", main)
         self.assertIn("'vpci'", main)
         self.assertIn('os.kill(os.getpid(), -status)', main)
@@ -480,7 +558,7 @@ class Cases(unittest.TestCase):
         parser = ast.parse(main)
         options = [node.args[0].value for node in ast.walk(parser) if isinstance(node, ast.Call)
                    and isinstance(node.func, ast.Attribute) and node.func.attr == 'add_argument']
-        self.assertEqual(set(options), {'--deadline-monotonic-ns', '--handshake-nonce', '--parent-pid', '--inference-backend'})
+        self.assertEqual(set(options), {'--deadline-monotonic-ns', '--handshake-nonce', '--parent-pid', '--inference-backend', '--editor-ui'})
 
     def test_final_cleanup_preserves_live_native_task_sample_without_skipping_stop(self):
         tree = ast.parse(inspect.getsource(T.guest))

@@ -408,7 +408,10 @@ class Fixture(unittest.TestCase):
         self.assertLess(final.index('finish_qemu_memory('), final.index("ssh('sudo', '-n', 'systemctl', 'poweroff'"))
         self.assertLess(final.index('finish_qemu_memory('), final.index('shutil.rmtree(scratch)'))
         self.assertNotIn('qemu_memory', inspect.getsource(TRIAL.guest))
-        self.assertNotIn('cache=', inspect.getsource(TRIAL.qemu_command))
+        for backend in ('torch', 'llama_cpp_bf16_v1'):
+            headless = TRIAL.qemu_command(Path('/tools'), Path('/private'), model_profile=TRIAL.LARGE_MODEL,
+                                          inference_backend=backend)
+            self.assertFalse(any('cache=' in str(argument) for argument in headless))
 
     def test_new_closed_export_binds_sources_and_preserves_legacy_receipts(self):
         value = self.receipt()

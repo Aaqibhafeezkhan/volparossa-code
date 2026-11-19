@@ -256,6 +256,10 @@ class Contracts(unittest.TestCase):
             (",\n                native_cpu=backend != 'torch'", ''),
             ("            observed_task = backend != 'torch' and name == TASK_UNIT and 'task_memory' in report\n", ''),
             ('if not observed_task and cgroup(name).exists():', 'if cgroup(name).exists():'),
+            (",\n              editor_core=manifest.get('frontend') == 'vscodium'", ''),
+            ("        if manifest.get('frontend') == 'vscodium':\n"
+             "            report['core_vcpu_affinity'] = sorted(os.sched_getaffinity(int(state['MainPID'])))\n"
+             "            require(report['core_vcpu_affinity'] == [0, 1], 'editor_core_affinity')\n", ''),
         )
         for added, original in changes:
             self.assertIn(added, source)

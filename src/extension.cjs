@@ -231,7 +231,10 @@ function register(vscode, context, Client = PrivateCompute, native = {}) {
       try { if (runtime) await runtime.close(); }
       finally { nativeActive = undefined; }
     }
+    const tools = result.taskDiagnostics?.tools;
     await show('VOLPAROSSA — OpenCode turn finished\n' +
+      (tools ? `Completed native tools: reads ${tools.read.completed}, edits ${tools.edit.completed}, shell commands ${tools.bash.completed}.\n` : '') +
+      (runtime.modelProfile ? `Model: ${runtime.modelProfile}\n` : '') +
       'Overall task correctness is not independently verified by this frontend. Review your changes and tool results.\n' +
       (result.verification ? `Owner-selected check: ${result.verification.status}; checks: ${result.verification.checks}; ` +
         `continuations: ${result.verification.continuations}. This describes only the selected check, not general correctness.\n` : '') +

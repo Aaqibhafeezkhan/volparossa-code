@@ -10,9 +10,10 @@ to the [VOLPAROSSA core](https://github.com/VOLPAROSSA/volparossa), with explici
 workspace permissions and reviewable edits. The goal is to share suitable work
 and combine agent results across the network, including protected private work.
 
-A bounded [read/edit/test task](docs/OPENCODE.md#explicit-native-cpu-candidate)
-already passes with a real local model on a public fixture, taking about 37 minutes
-on the disposable CPU runner. Confidential peer coding remains unfinished.
+The Linux VSCodium workbench and the headless OpenCode runtime both complete
+a bounded read/edit/test task with a real local Qwen3 4B model. The editor trial
+records the workspace consent, proposed edit, shell command and independent check.
+Confidential peer coding remains unfinished. [Workbench evidence](docs/OPENCODE.md#vscodium-workbench-trial).
 Contribute to the executable loop, editor integration or measured coding quality
 to help move that larger goal beyond a demonstration.
 
@@ -86,14 +87,19 @@ a final response. The original tests stay unchanged and an independent check
 passes. Task-resource measurements, unchanged inputs, clean core shutdown and
 guest/VM cleanup are verified.
 
-The task takes about 37 minutes on the disposable CPU runner; this is a working
-development slice, not competitive performance or general coding-quality proof.
+In VSCodium 1.135.06055, the production OpenCode command completed two model-driven
+reads, one approved edit and one approved shell test. The owner separately approved
+the verification command. All three original tests then passed against the edited
+source. The workbench displayed the result and the VM released its resources.
+[Native editor trial](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44526473502).
+
+The headless task took about 37 minutes. The full disposable editor VM step,
+including provisioning and shutdown, took 44 minutes 19 seconds.
 The core processes the complete prompt in adaptive blocks while retaining the
 model, permissions, resource budgets and ten-second owner-control guard. Earlier
 failed trials remain documented. This path pins the exact tested core candidate
 `7d0f9f0b`, rather than selecting whichever core happens to be on `main`.
-Native editor UI operation, protected peer execution and the complete
-immune-policy path remain open. See the
+Protected peer execution and the complete immune-policy path remain open. See the
 [native CPU evidence](docs/OPENCODE.md#explicit-native-cpu-candidate).
 
 **Real public peer proof:** a separate owner command successfully obtained a
@@ -160,8 +166,8 @@ notice and source pin are preserved in [third-party provenance](THIRD_PARTY_LICE
 
 ## Remaining work
 
-- Verify native editor operation with the proven real-model read/edit/test
-  lifecycle, and improve measured coding quality, speed and resource use.
+- Extend the native editor trial to additional coding tasks and measure quality,
+  speed and resource use.
 - Extend the proven public single-file owner command to a complete real-model
   OpenCode cooperative tool loop; retain original results, cancellation and provenance.
 - Implement remote conversation execution and actual protected private work,

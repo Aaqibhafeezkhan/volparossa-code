@@ -66,6 +66,100 @@ owner-selected check after each completed coding turn. Each invocation requires
 separate approval; an actual failed check can continue the same session within
 the original task budget. See [editor setup and check limitations](OWNER_VERIFICATION.md#use-from-the-editor).
 
+### VSCodium workbench trial
+
+The manual **Explicit OpenCode Qwen KVM inference** workflow accepts an optional
+`editor_ui` selection for the Qwen4B BF16 native profile. Its default remains
+the existing command-line trial. Dispatch with the exact commit of a reviewed
+development branch as both its ref target and `expected_code_sha`.
+
+```sh
+gh workflow run opencode-inference.yml --ref "$reviewed_branch" \
+  -f expected_code_sha="$reviewed_sha" -f model_profile=qwen3-4b-instruct-2507-v1 \
+  -f inference_backend=llama_cpp_bf16_v1 -f editor_ui=true
+```
+
+The disposable VM acquires the official VSCodium 1.135.06055 AMD64 Debian
+release and verifies its package, declared source commit and executable. The
+package SHA-256 is `5f5c00a9da9d232e4c84e9eee68bbdeb4d8737462022626ce3bdb6948f3d8649`.
+The unpacked executable matches the Core historical editor inventory. All package
+licenses and notices stay with the distribution. [Official VSCodium release](https://github.com/VSCodium/vscodium/releases/tag/1.135.06055).
+
+The rendered workbench runs with a new profile, only loopback, read-only
+application inputs and one writable synthetic arithmetic project. The driver
+uses keyboard and mouse events to grant workspace trust, open **Run OpenCode
+Task (Development)**, enter the original task and approve the precise project.
+It checks each rendered edit, shell and owner-verification request against that
+fixture. The deployed extension owns the runtime, model connection, tool prompts
+and shutdown. The model uses the same Core/Qwen4B backend and existing task and
+inference deadlines as the headless fixture. The editor and task share a 2 GiB
+cgroup ceiling. The ordinary headless ceiling remains 768 MiB.
+
+A passing editor receipt requires observed completed native reads, edits and
+shell commands, visible owner-check success, and independent execution of the
+three original tests against the changed source. Its baseline must fail and
+the original test bytes must survive unchanged. The parent separately checks
+native model provenance, cgroup cleanup and VM shutdown. The exercise uses
+a local model in the disposable guest and sends no repository to a peer.
+
+The complete workbench trial passed on Code
+`9342b3c0ed41a65a6a1379f6957d1021d57d7f6d` and Core
+`7d0f9f0b492c5e692cc9d26f23d95f55f2c1e651`. The owner granted trust to the
+disposable workspace and started OpenCode from the rendered editor. Qwen3 4B
+read two files, edited the arithmetic implementation and invoked one shell
+test. The workbench recorded three separate approvals for the edit, shell
+test and independent owner check. The original three-test suite failed at baseline
+and all three tests passed against the changed source. The workbench displayed
+the successful result. The full VM step took 44 minutes 19 seconds.
+[Original VSCodium run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44526473502).
+
+The editor and task cgroup peaked at 1,550,524,416 bytes, Core at 6,729,953,280
+bytes and QEMU at 13,501,227,008 bytes. All recorded zero OOM kills and swap.
+The editor exited, the selected project was removed, Core stopped cleanly and
+QEMU was joined. The host route and DNS snapshots matched. The original
+11,859-byte receipt archive has SHA-256
+`81793648d7f95982e70e35c397aefbea5dca4ff5b56139e8dbc01f12ef3b656d`.
+The model ran locally inside the disposable guest. Confidential private-peer
+execution and general coding quality remain open.
+[Download the original receipt ZIP](evidence/vscodium-qwen4b-44526473502.zip).
+
+The first editor run reached the real trust flow, task consent and Start button.
+It stopped before the first model request. Its additional user namespace exposed
+the root-owned Python verifier as UID 65534. The production verifier refused it.
+The editor now runs in a systemd-managed filesystem root with the original UID
+mapping, a read-only system runtime and an explicit mount for the Core socket.
+The OpenCode process and the separate owner check retain their own sandboxes.
+[First editor run](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44437618311).
+
+The rendered editor subsequently reached the native Core service. The nested
+sandbox, original failing tests, runtime isolation, workspace trust and task
+consent passed. Core rejected the first request at admission. The 12 GiB guest
+had 11,116,531,712 available bytes and the model required 11,274,289,152.
+The editor profile now assigns 12.5 GiB to the guest within the existing 13 GiB
+QEMU hard limit and 14 GiB host admission floor. The headless guest uses 12 GiB.
+[Editor admission receipt](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44447437976).
+
+With that memory the next editor run passed admission and finished a 143-token
+generation for a 4,997-token prompt at 595.56 seconds. Core reported its
+600-second deadline during final verification. The fixture remained unverified.
+The editor VM now assigns two vCPUs to the existing two-thread Core service and
+a third to the editor and its owner controls. After consent the driver samples
+persistent approval dialogs every 1.5 seconds and skips trust-page scans. The
+600-second inference and 2,400-second owner-task deadlines still apply.
+[Editor generation receipt](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44449017418).
+
+The next run reached the 13 GiB QEMU limit during guest preparation. The
+cgroup recorded one OOM kill. Its terminal sample included 446,881,792 dirty
+file bytes. The editor trial now uses QEMU's direct I/O mode (`cache=none`)
+on its disposable writable qcow2 overlay. This avoids a second host page cache
+for guest disk data and preserves guest flushes. QEMU's hard limit and the
+read-only seed drive keep their existing settings. A local QEMU 10.0.13 check
+wrote and flushed 32 MiB to two qcow2 overlays. The kernel reported 8,257
+resident 4 KiB pages with writeback caching and 32 with direct I/O. Both
+readbacks and qcow2 consistency checks passed, and the backing file kept its
+original SHA-256.
+[QEMU cgroup receipt](https://github.com/VOLPAROSSA/volparossa-code/actions/runs/44454367646).
+
 ### Connection-bound native execution candidate
 
 The native CPU path now requests a connection-bound session from the core.

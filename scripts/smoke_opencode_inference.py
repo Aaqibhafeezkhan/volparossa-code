@@ -7,6 +7,7 @@ revision). execute owns one explicitly selected KVM, its private SSH keys and te
 guest is rejected outside the disposable vpci Debian KVM. No Codex is launched.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import io
@@ -15,6 +16,7 @@ import os
 from pathlib import Path, PurePosixPath
 import pwd
 import re
+import selectors
 import shutil
 import signal
 import socket
@@ -56,23 +58,30 @@ def require(value, reason):
         raise ValueError(reason)
 
 
-def trial_profile(model_profile=MODEL, inference_backend='torch'):
+def trial_profile(model_profile=MODEL, inference_backend='torch', *, editor_ui=False):
     """Closed source/resource choices; the larger trial never changes the default."""
     require(model_profile in MODEL_PROFILES, 'unknown_model_profile')
     require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    require(not editor_ui or inference_backend == 'llama_cpp_bf16_v1', 'editor_requires_native')
     if inference_backend != 'torch':
         require(model_profile == LARGE_MODEL, 'native_backend_requires_qwen4b')
         require(type(NATIVE_CORE) is str and re.fullmatch('[0-9a-f]{40}', NATIVE_CORE), 'native_core_not_pinned')
-        return dict(trial_profile(model_profile), core_revision=NATIVE_CORE,
+        profile = trial_profile(model_profile)
+        if editor_ui:
+            # The rendered editor and OpenCode share this guest with the model.
+            # Keep the existing outer hard ceiling and the Core admission test.
+            profile['guest_memory_mib'] += 512
+            profile['guest_vcpus'] = 3
+        return dict(profile, core_revision=NATIVE_CORE,
                     inference_backend=inference_backend, native_source_commit=NATIVE_SOURCE)
     if model_profile == MODEL:
-        return dict(model_profile=MODEL, core_revision=CORE, guest_memory_mib=6144,
+        return dict(model_profile=MODEL, core_revision=CORE, guest_memory_mib=6144, guest_vcpus=2,
                     core_memory_bytes=5 * GIB, qemu_memory_bytes=7 * GIB,
                     host_available_bytes=8 * GIB, provision_budget_bytes=5 * GIB,
                     scratch_gib=18, memory_failure='host_available_memory_below_8GiB')
     require(type(LARGE_CORE) is str and re.fullmatch('[0-9a-f]{40}', LARGE_CORE),
             'larger_core_not_pinned')
-    return dict(model_profile=LARGE_MODEL, core_revision=LARGE_CORE, guest_memory_mib=12288,
+    return dict(model_profile=LARGE_MODEL, core_revision=LARGE_CORE, guest_memory_mib=12288, guest_vcpus=2,
                 core_memory_bytes=11 * GIB, qemu_memory_bytes=13 * GIB,
                 host_available_bytes=14 * GIB, provision_budget_bytes=20 * GIB,
                 scratch_gib=40, memory_failure='host_available_memory_below_14GiB')
@@ -88,8 +97,11 @@ def validate_backend_fields(value, profile):
             == expected, 'input_backend')
 
 
-def task_arguments(inference_backend='torch'):
+def task_arguments(inference_backend='torch', editor_ui=False):
     require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    if editor_ui:
+        require(inference_backend == 'llama_cpp_bf16_v1', 'editor_requires_native')
+        return [sys.executable, '-B', str(INPUT / 'code/scripts/opencode_editor.py'), 'run']
     return [str(INPUT / 'runtime/node'), str(INPUT / 'code/scripts/smoke_opencode_inference.cjs'),
             '--execute', '--yes', '--node', str(INPUT / 'runtime/node'), '--build-report',
             str(INPUT / 'runtime/build-report.json'), '--socket', str(BASE / 'private.sock'),
@@ -97,8 +109,19 @@ def task_arguments(inference_backend='torch'):
             *(['--output-constraint', OUTPUT_CONSTRAINT] if inference_backend != 'torch' else [])]
 
 
-def validate_task_selection(task, profile, inference_backend='torch'):
+def validate_task_selection(task, profile, inference_backend='torch', editor_ui=False):
     require(inference_backend in INFERENCE_BACKENDS, 'unknown_inference_backend')
+    require((task.get('kind') == 'opencode-vscodium-task') == editor_ui, 'task_frontend_mismatch')
+    if editor_ui and task.get('passed') is True:
+        view = task.get('rendered', {})
+        require(inference_backend == 'llama_cpp_bf16_v1' and task.get('editor_exited') is True
+                and task.get('baseline_tests_failed') is True and task.get('independent_test_passed') is True
+                and task.get('project_removed') is True and view.get('model_profile') == LARGE_MODEL
+                and all(view.get(key) is True for key in ('workspace_trust_granted', 'command_and_consent_rendered',
+                    'started_from_editor', 'editor_result_shown', 'owner_check_passed', 'cdp_closed', 'passed'))
+                and all(type(view.get(key)) is int and 1 <= view[key] <= 65535 for key in
+                    ('approved_edit', 'approved_test', 'approved_check', 'completed_reads', 'completed_edits',
+                     'completed_shell_commands')), 'editor_acceptance')
     require(task['model_profile'] == profile['model_profile'], 'task_model_mismatch')
     require(type(task.get('version')) is int and task['version'] == (1 if inference_backend == 'torch' else 2)
             and (task.get('output_constraint') == OUTPUT_CONSTRAINT if inference_backend != 'torch'
@@ -302,6 +325,10 @@ def pack(args):
              'third_party/opencode.json', 'third_party/opencode-LICENSE.txt',
              'third_party/opencode-build-tools.json', 'patches/opencode-no-runtime-installs.patch',
              'LICENSE', 'THIRD_PARTY_LICENSES.md']
+    if getattr(args, 'editor_ui', False):
+        require(profile.get('inference_backend') == 'llama_cpp_bf16_v1', 'editor_requires_native')
+        names.extend(['package.json', 'scripts/smoke_editor_ui.cjs', 'scripts/opencode_editor_ui.cjs',
+                      'scripts/opencode_editor.py'])
     files.update({f'code/{name}': ROOT / name for name in names})
     files.update({'runtime/opencode': binary, 'runtime/build-report.json': report_path,
                   'runtime/node': args.node, 'runtime/node-LICENSE': args.node.parent.parent / 'LICENSE'})
@@ -324,6 +351,8 @@ def pack(args):
             node_version='24.19.0', model_profile=profile['model_profile'], opencode_revision=report['source_commit'],
             opencode_binary_sha256=report['binary_sha256'], files=inventory)
         manifest.update(backend_fields(profile))
+        if getattr(args, 'editor_ui', False):
+            manifest['frontend'] = 'vscodium'
         encoded = (json.dumps(manifest, sort_keys=True, indent=2) + '\n').encode()
         with tarfile.open(args.output, 'x:gz', compresslevel=1) as target:
             for name, source in files.items():
@@ -521,12 +550,19 @@ def run_native_build(limit, report):
     # no temporary handshake path can escape or weaken the all-units-empty gate.
 
 
-def start(name, command, limit, seconds, public_source_build=False):
+def start(name, command, limit, seconds, public_source_build=False, *, editor_core=False):
     require(not public_source_build or name == NATIVE_UNIT, 'native_build_network_scope')
+    editor_ui = name == TASK_UNIT and '--editor-ui' in command
+    editor_properties = (module(INPUT / 'code/scripts/opencode_editor.py', 'editor_task_service').service_properties()
+                         if editor_ui else [])
+    if editor_core:
+        require(name == CORE_UNIT, 'editor_core_unit')
+        editor_properties.append('--property=CPUAffinity=0 1')
     (BASE / (name + '.log')).touch(mode=0o600)
     run(['sudo', '-n', 'systemd-run', '--quiet', '--unit=' + name, '--property=Type=exec',
          '--property=RemainAfterExit=yes', '--property=User=vpci', '--property=Group=vpci',
-         '--property=WorkingDirectory=/home/vpci/source', '--property=MemoryMax=' + str(limit),
+         '--property=WorkingDirectory=' + str(PROJECTS if editor_ui else SOURCE), *editor_properties,
+         '--property=MemoryMax=' + str(limit),
          '--property=MemorySwapMax=0', '--property=TasksMax=256', '--property=KillMode=control-group',
          '--property=RuntimeMaxSec=' + str(seconds), '--property=TimeoutStopSec=15',
          '--property=NoNewPrivileges=yes', '--property=PrivateNetwork=' + ('no' if public_source_build else 'yes'),
@@ -535,33 +571,73 @@ def start(name, command, limit, seconds, public_source_build=False):
          '--setenv=RUST_LOG=off,volparossa::compute::private_diagnostic=debug', '--setenv=NO_COLOR=1', *command])
 
 
+def accept_task_holder(listener, holder, deadline, report):
+    state = properties(TASK_UNIT)
+    pid = state.get('MainPID', '')
+    if (state.get('ActiveState') != 'active' or state.get('SubState') != 'running'
+            or not re.fullmatch('[1-9][0-9]{0,9}', pid)):
+        report['task_unit_before_ready'] = closed_native_unit(state)
+        raise ValueError('task_holder_ended_before_ready')
+    try:
+        pidfd = os.pidfd_open(int(pid))
+    except ProcessLookupError:
+        report['task_unit_before_ready'] = closed_native_unit(properties(TASK_UNIT))
+        raise
+    try:
+        with selectors.DefaultSelector() as ready:
+            ready.register(pidfd, selectors.EVENT_READ)
+            ready.register(listener, selectors.EVENT_READ)
+            events = ready.select(holder.remaining(deadline))
+            require(events, 'task_holder_deadline')
+            if any(key.fileobj == pidfd for key, _ in events):
+                report['task_unit_before_ready'] = closed_native_unit(properties(TASK_UNIT))
+                raise ValueError('task_holder_ended_before_ready')
+            return int(pid), listener.accept()[0]
+    finally:
+        os.close(pidfd)
+
+
+@contextmanager
+def record_task_failure(report, holder, root, nonce):
+    try:
+        yield
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        if 'editor_runtime' in report:
+            from opencode_editor import failure_details
+            report['task_exception'] = failure_details(error)
+            detail = holder.failure_detail(root / holder.FAILURE_NAME, nonce)
+            if detail is not None:
+                report['task_holder_failure'] = detail
+            if 'task_exit_status' not in report and 'task_unit_before_ready' not in report:
+                try:
+                    report['task_unit_before_ready'] = closed_native_unit(properties(TASK_UNIT))
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    pass
+        raise
+
+
 def run_native_task(profile, backend, report):
     holder = module(INPUT / 'code/scripts/opencode_task_holder.py', 'opencode_task_holder_inputs')
+    editor_ui = 'editor_runtime' in report
+    task_memory_limit = (2048 if editor_ui else 768) * 1024**2
     nonce, started = os.urandom(32).hex(), time.monotonic_ns()
     deadline = started + 2550 * 1_000_000_000
     owner_deadline = started + 2565 * 1_000_000_000
-    path = BASE / holder.CONTROL
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+    task_root = PROJECTS if editor_ui else BASE
+    path = task_root / holder.CONTROL
+    with record_task_failure(report, holder, task_root, nonce), socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
         listener.bind(str(path))
         path.chmod(0o600)
         listener.listen(1)
         start(TASK_UNIT, [sys.executable, '-B', str(INPUT / 'code/scripts/opencode_task_holder.py'),
               '--deadline-monotonic-ns', str(deadline), '--handshake-nonce', nonce,
-              '--parent-pid', str(os.getpid()), '--inference-backend', backend], 768 * 1024**2, 2550)
-        while True:
-            listener.settimeout(min(2.0, holder.remaining(deadline)))
-            try:
-                channel, _ = listener.accept()
-                break
-            except TimeoutError:
-                state = properties(TASK_UNIT)
-                require(state.get('ActiveState') == 'active' and state.get('SubState') == 'running',
-                        'task_holder_ended_before_ready')
-        with channel:
+              '--parent-pid', str(os.getpid()), '--inference-backend', backend,
+              *(['--editor-ui'] if editor_ui else [])], task_memory_limit, 2550)
+        pid, connection = accept_task_holder(listener, holder, deadline, report)
+        with connection as channel:
             state = properties(TASK_UNIT)
             require(state.get('ActiveState') == 'active' and state.get('SubState') == 'running'
-                    and re.fullmatch('[0-9]{1,10}', state.get('MainPID', '')), 'task_holder_not_running')
-            pid = int(state['MainPID'])
+                    and state.get('MainPID') == str(pid), 'task_holder_not_running')
             holder.peer(channel, pid)
             ready = holder.decode_ready(holder.receive_frame(channel, deadline), nonce)
             status = ready['child_returncode']
@@ -571,17 +647,17 @@ def run_native_task(profile, backend, report):
             primary = None
             try:
                 if ready['receipt_sha256'] is not None:
-                    raw = holder.receipt_bytes(BASE / 'task.json')
+                    raw = holder.receipt_bytes(task_root / 'task.json')
                     require(hashlib.sha256(raw).hexdigest() == ready['receipt_sha256'], 'task_receipt_changed')
                     report['task'] = json.loads(raw)
-                    validate_task_selection(report['task'], profile, backend)
+                    validate_task_selection(report['task'], profile, backend, editor_ui)
                 else:
                     require(status != 0, 'task_holder_missing_success_receipt')
                 group = holder.Group(cgroup(TASK_UNIT), pid)
                 try:
                     report['core_memory'] = memory(CORE_UNIT)
                     report['task_memory'] = group.memory()
-                    require(report['task_memory']['maximum'] == 768 * 1024**2, 'task_memory_limit')
+                    require(report['task_memory']['maximum'] == task_memory_limit, 'task_memory_limit')
                     for field in ('core_memory', 'task_memory'):
                         require(report[field]['swap'] == report[field]['oom_kill'] == 0, 'resource_violation')
                 finally:
@@ -661,6 +737,15 @@ def guest(args):
             require(properties(NATIVE_UNIT).get('LoadState') == 'not-found', 'existing_unit')
             created.append(NATIVE_UNIT)
             report['native_build'] = run_native_build(profile['core_memory_bytes'], report)
+            if manifest.get('frontend') == 'vscodium':
+                args.editor_guest_report = report
+                report['phase'] = 'editor-provision'
+                editor = module(INPUT / 'code/scripts/opencode_editor.py', 'opencode_editor_inputs')
+                with (BASE / 'packages.log').open('ab') as log:
+                    subprocess.run(['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get', 'install',
+                        '--yes', '--no-install-recommends', *editor.PACKAGES], stdout=log, stderr=log,
+                        check=True, timeout=600)
+                report['editor_runtime'] = editor.provision()
         report['phase'] = 'model-provision'
         provision_stage = 'pins'
         model = module(private.ML / 'provision.py', 'opencode_model_provision')
@@ -705,13 +790,17 @@ def guest(args):
             '--model-root', str(BASE / 'ml/model'), '--model-profile', profile['model_profile'],
             '--threads', '2', '--max-seconds', '600', '--execute',
             *(['--native-backend-root', str(BASE / 'ml/native-backend'), '--native-backend-sha256',
-               report['native_backend']['manifest_sha256']] if backend != 'torch' else [])], profile['core_memory_bytes'], 2700)
+               report['native_backend']['manifest_sha256']] if backend != 'torch' else [])], profile['core_memory_bytes'], 2700,
+              editor_core=manifest.get('frontend') == 'vscodium')
         deadline = time.monotonic() + 15
         while not (BASE / 'private.sock').exists() and time.monotonic() < deadline:
             time.sleep(.1)
         state = properties(CORE_UNIT)
         require(state.get('ActiveState') == 'active' and (BASE / 'private.sock').is_socket(), 'core_not_ready')
         require(int(state['MainPID']) > 0, 'core_process')
+        if manifest.get('frontend') == 'vscodium':
+            report['core_vcpu_affinity'] = sorted(os.sched_getaffinity(int(state['MainPID'])))
+            require(report['core_vcpu_affinity'] == [0, 1], 'editor_core_affinity')
         report['phase'] = 'opencode-task'
         created.append(TASK_UNIT)
         if backend != 'torch':
@@ -889,13 +978,18 @@ def boot_running(state):
         and int(state['MainPID']) > 0
 
 
-def qemu_command(tools, scratch, firmware=None, model_profile=MODEL, inference_backend='torch'):
-    profile = trial_profile(model_profile, inference_backend)
+def qemu_command(tools, scratch, firmware=None, model_profile=MODEL, inference_backend='torch', *, editor_ui=False):
+    profile = trial_profile(model_profile, inference_backend, editor_ui=editor_ui)
     firmware = firmware or tools / 'root/usr/share/seabios/vgabios-stdvga.bin'
+    overlay = 'if=virtio,format=qcow2,file=' + str(scratch / 'overlay.qcow2')
+    if editor_ui:
+        # Direct image I/O avoids charging guest writes to a second page cache
+        # inside QEMU's no-swap cgroup. Guest flushes remain enabled.
+        overlay += ',cache=none'
     return [tools / 'bin/qemu-system-x86_64', '-name', 'volparossa-opencode-inference', '-no-user-config', '-nodefaults',
-        '-machine', 'q35,accel=kvm', '-cpu', 'host', '-smp', '2', '-m', str(profile['guest_memory_mib']),
+        '-machine', 'q35,accel=kvm', '-cpu', 'host', '-smp', str(profile['guest_vcpus']), '-m', str(profile['guest_memory_mib']),
         '-device', 'VGA,id=video0,bus=pcie.0,addr=0x1,romfile=' + str(firmware),
-        '-drive', 'if=virtio,format=qcow2,file=' + str(scratch / 'overlay.qcow2'),
+        '-drive', overlay,
         '-drive', 'if=virtio,format=raw,readonly=on,file=' + str(scratch / 'seed.img'),
         '-device', 'virtio-rng-pci', '-device', 'virtio-net-pci,netdev=net0',
         '-netdev', 'user,id=net0,hostfwd=tcp:127.0.0.1:22223-:22', '-display', 'none', '-monitor', 'none',
@@ -956,10 +1050,13 @@ def validate_bundle(path, model_profile=MODEL, inference_backend='torch'):
 
 def execute(args):
     backend = getattr(args, 'inference_backend', 'torch')
-    profile = trial_profile(getattr(args, 'model_profile', MODEL), backend)
+    editor_ui = getattr(args, 'editor_ui', False)
+    profile = trial_profile(getattr(args, 'model_profile', MODEL), backend, editor_ui=editor_ui)
     os.umask(0o077)
     require(args.yes and os.getuid() > 0, 'explicit_unprivileged_execution')
     new_output(args.output)
+    if editor_ui:
+        require(len(os.sched_getaffinity(0)) >= profile['guest_vcpus'], 'editor_host_cpus')
     require(available_memory() >= profile['host_available_bytes'], profile['memory_failure'])
     require(os.access('/dev/kvm', os.R_OK | os.W_OK), 'host_kvm_unavailable')
     canonical(args.image)
@@ -978,6 +1075,7 @@ def execute(args):
              '--verify', '--output', canonical(args.tools)])
         host_tools = None
     manifest = validate_bundle(args.bundle, profile['model_profile'], backend)
+    require(manifest.get('frontend') == ('vscodium' if editor_ui else None), 'input_frontend')
     # The host executes only this reviewed runner; guest code remains in KVM.
     require(manifest['files']['code/scripts/smoke_opencode_inference.py']['sha256'] == digest(Path(__file__)),
             'runner_differs_from_captured_input')
@@ -1004,12 +1102,14 @@ def execute(args):
     receipt = dict(version=1, kind='opencode-inference-vm', passed=False, phase='prepare', failure=None,
         core_revision=profile['core_revision'], model_profile=profile['model_profile'],
         bundle_sha256=digest(args.bundle), bundle_bytes=args.bundle.stat().st_size,
-        code_contains_uncommitted_changes=True, memory_mib=profile['guest_memory_mib'], cpus=2, vm_started=False,
+        code_contains_uncommitted_changes=True, memory_mib=profile['guest_memory_mib'], cpus=profile['guest_vcpus'], vm_started=False,
         qemu_joined=False, scratch_removed=False, host_observed_routes_dns_unchanged=None,
         host_raw_route_dns_bytes_unchanged=None, host_observation_scope='proc_visible_routes_and_resolv_conf',
         host_firewall_modified=False, actual_model_execution_proven=False,
         confidential_remote_execution_proven=False)
     receipt.update(backend_fields(profile))
+    if editor_ui:
+        receipt['frontend'] = 'vscodium'
     if host_tools is not None:
         receipt['host_tools_profile'] = tools_profile
         receipt['host_tools_sha256'] = hashlib.sha256(json.dumps(host_tools, sort_keys=True).encode()).hexdigest()
@@ -1064,7 +1164,7 @@ def execute(args):
         receipt['host_available_bytes_at_launch'] = available
         qemu = qemu_command(args.tools, scratch,
                             Path('/usr/share/seabios/vgabios-stdvga.bin') if host_tools is not None else None,
-                            profile['model_profile'], backend)
+                            profile['model_profile'], backend, editor_ui=editor_ui)
         run(['systemd-run', '--user', '--quiet', '--unit=' + name, '--property=Type=exec',
             '--property=RemainAfterExit=yes',
             '--property=MemoryMax=' + str(profile['qemu_memory_bytes']), '--property=MemorySwapMax=0',
@@ -1114,7 +1214,11 @@ def execute(args):
         require(result.get('core_revision') == profile['core_revision']
                 and result.get('model_profile') == profile['model_profile'], 'guest_source_profile')
         if backend != 'torch' and result.get('passed') is True:
-            validate_task_selection(result.get('task', {}), profile, backend)
+            validate_task_selection(result.get('task', {}), profile, backend, editor_ui)
+            if editor_ui:
+                require(result.get('editor_runtime', {}).get('binary_sha256')
+                        == '51ea8d7fb3795a03754b6518fb738d202fbb13185336de6719c4fd8b4ba984aa',
+                        'editor_provenance')
         receipt['actual_model_execution_proven'] = bool(result.get('passed') and result.get('actual_model_provisioned'))
         require(executed.returncode == 0 and result.get('passed') is True, 'guest_trial_failed')
         receipt['phase'], status = 'complete', 0
@@ -1171,9 +1275,11 @@ def main():
     packing.add_argument('--core', type=Path, required=True)
     packing.add_argument('--node', type=Path, required=True)
     packing.add_argument('--output', type=Path, required=True)
+    packing.add_argument('--editor-ui', action='store_true')
     guest_parser = modes.add_parser('guest')
     execution = modes.add_parser('execute')
     execution.add_argument('--yes', action='store_true')
+    execution.add_argument('--editor-ui', action='store_true')
     execution.add_argument('--host-tools-profile', choices=('workspace-debian', 'github-ubuntu-24.04'),
                            default='workspace-debian')
     for name in ('core', 'tools', 'image', 'bundle', 'output'):
@@ -1185,6 +1291,9 @@ def main():
     if args.mode == 'pack':
         pack(args)
     elif args.mode == 'guest':
+        editor = INPUT / 'code/scripts/opencode_editor.py'
+        if editor.is_file():
+            return module(editor, 'editor_guest_result').guest_result(guest, args, record)
         return guest(args)
     elif args.mode == 'execute':
         return execute(args)
