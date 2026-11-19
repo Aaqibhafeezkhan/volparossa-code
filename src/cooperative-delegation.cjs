@@ -192,6 +192,7 @@ class CooperativeDelegation {
             sourceSha256: createHash('sha256').update(snapshot.input.context).digest('hex'),
             text: answer.result.outputs[0].text, complete: answer.result.proposal_complete,
             coreTaskId: answer.core_task_id, toolCallId: value.tool_call_id,
+            peerJobId: answer.result.receipt.handle.binding.job_id,
             peerReportSha256: answer.result.receipt.status.report_sha256})});
         }
         return response;

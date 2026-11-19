@@ -430,7 +430,7 @@ function proposalFixture({complete = true, apply = true, cleanup = true} = {}) {
   const source = Object.freeze({context: 'export const value = 1;', sourceSha256: 'a'.repeat(64), relativePath: 'source.js'});
   const snapshot = Object.freeze({}), response = Object.freeze({}), proposal = {
     complete, sourceSha256: source.sourceSha256, text: 'export const value = 2;', coreTaskId: 'core-task', toolCallId: 'tool',
-    peerReportSha256: 'a'.repeat(64)};
+    peerJobId: 'b'.repeat(32), peerReportSha256: 'a'.repeat(64)};
   native.publicCodeFile = {
     capturePublicCodeFile(value) { events.push(['capture', value]); return source; },
     async applyPublicCodeFile(s, token, result, {approve}) {
@@ -468,7 +468,8 @@ test('public file command shares exact source only and joins cleanup before sepa
   assert(f.events.findIndex(event => event[0] === 'cleanup') < f.events.findIndex(event => event[0] === 'apply'));
   assert.deepEqual(f.events.find(event => event[0] === 'socket'), ['socket', '/owner/public.sock']);
   assert.match(f.documents.at(-1).content, /applied to the selected file/);
-  assert.ok(f.documents.at(-1).content.includes('Core task: core-task\nPeer report SHA-256: ' + 'a'.repeat(64)));
+  assert.ok(f.documents.at(-1).content.includes('Core request: core-task\nPeer job: ' + 'b'.repeat(32) +
+    '\nPeer report SHA-256: ' + 'a'.repeat(64)));
   assert.match(f.documents.at(-1).content, /No local test result/);
 });
 test('incomplete peer output, declined local edit and failed cleanup never apply', async () => {

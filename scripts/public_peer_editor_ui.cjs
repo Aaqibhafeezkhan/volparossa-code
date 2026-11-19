@@ -39,13 +39,14 @@ const STATE = `(() => {
   const preview = documents.some(lines => lines.includes('Public source proposal — GPL-3.0-only') &&
     lines.includes(${JSON.stringify(QUESTION)}) && lines.includes('Complete selected file:') && hasSource(lines));
   const result = documents.find(lines => lines.includes('VOLPAROSSA public code proposal: applied to the selected file.'));
-  const core = result?.find(line => /^Core task: [0-9a-f]{32}$/.test(line));
+  const core = result?.find(line => /^Core request: [0-9a-f]{32}$/.test(line));
+  const job = result?.find(line => /^Peer job: [0-9a-f]{32}$/.test(line));
   const peer = result?.find(line => /^Peer report SHA-256: [0-9a-f]{64}$/.test(line));
   return {quick:visible(input)?center(input):null,title:text(quick?.querySelector('.quick-input-title')),
     license:choice.length===1?center(choice[0]):null, file:files.length===1?center(files[0]):null, dialogs,
     source:documents.some(hasSource), preview, applied:!!result,
     checked:!!result?.includes('Owner-selected local check: passed; not general correctness.'),
-    core:core?.slice('Core task: '.length), peer:peer?.slice('Peer report SHA-256: '.length),
+    core:core?.slice('Core request: '.length), job:job?.slice('Peer job: '.length), peer:peer?.slice('Peer report SHA-256: '.length),
     failed:[...document.querySelectorAll('.notification-list-item-message')].filter(visible)
       .some(e=>text(e).includes('VOLPAROSSA could not complete this operation.'))};
 })()`;
@@ -96,9 +97,10 @@ async function exercise(cdp, evidence, intactTests, {stopBeforeEnrollment = fals
   while (Date.now() < deadline) {
     ui = await cdp.snapshot(STATE);
     assert.ok(!ui.failed && ui.dialogs.length <= 1, 'peer_operation');
-    if (ui.applied && ui.checked && ui.core && ui.peer) {
+    if (ui.applied && ui.checked && ui.core && ui.job && ui.peer) {
       assert.ok(evidence.owner_edit_approved && evidence.owner_test_approved, 'owner_result');
       evidence.core_task_id = ui.core;
+      evidence.peer_job_id = ui.job;
       evidence.report_sha256 = ui.peer;
       evidence.owner_check_status = 'passed';
       evidence.result_shown = true;
@@ -148,7 +150,7 @@ async function run() {
     original_source_sha256:hash(ORIGINAL),original_tests_sha256:hash(TEST),question_sha256:hash(QUESTION),
     license:LICENSE,original_baseline_failed:false,original_tests_unchanged:false,independent_test_passed:false,
     only_selected_file_present:false,actual_applied_sha256:null,replacement_sha256:null,core_task_id:null,
-    report_sha256:null,editor_joined:false,project_removed:false,failure:null};
+    peer_job_id:null,report_sha256:null,editor_joined:false,project_removed:false,failure:null};
   let editor, closed, cdp;
   try {
     await fs.mkdir(PROJECT,{mode:0o700});

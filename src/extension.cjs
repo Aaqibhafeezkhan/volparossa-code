@@ -338,7 +338,7 @@ function register(vscode, context, Client = PrivateCompute, native = {}) {
     }
     await show(`VOLPAROSSA public code proposal: ${applied.applied ? 'applied to the selected file' : 'not applied'}.\n` +
       (verification ? `Owner-selected local check: ${verification.status}; not general correctness.\n` : 'No local test result is claimed.\n') +
-      `Core task: ${proposal.coreTaskId}\nPeer report SHA-256: ${proposal.peerReportSha256}\n` +
+      `Core request: ${proposal.coreTaskId}\nPeer job: ${proposal.peerJobId}\nPeer report SHA-256: ${proposal.peerReportSha256}\n` +
       'Other files and private history were not delegated. This first single-file contract is not protected private peer coding.');
   })));
   context.subscriptions.push({dispose() {

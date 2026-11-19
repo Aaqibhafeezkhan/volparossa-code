@@ -13,6 +13,8 @@ test('actual Unix transport keeps source/task/model/report binding and exact raw
     assert.deepEqual(response.result, result(INPUT, profile));
     assert.equal(response.core_task_id, f.requests[1].id);
     const proposal = validatedCodeProposal(f.snapshot, response);
+    assert.equal(proposal.peerJobId, response.result.receipt.handle.binding.job_id);
+    assert.equal(proposal.peerReportSha256, response.result.receipt.status.report_sha256);
     assert.equal(proposal.text, response.result.outputs[0].text); assert.equal(proposal.complete, true);
     response.result.outputs[0].text = 'caller altered result';
     assert.equal(validatedCodeProposal(f.snapshot, response).text, 'export const value = 2;\n');
