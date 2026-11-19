@@ -924,9 +924,13 @@ acknowledgements under the unchanged guard. No per-acknowledgement counts or
 pause latencies are exported, so neither is claimed. All 35 packed Code source
 files match the tested commit, the complete core archive matches `7d0f9f0b`,
 and the input manifest and native wrapper/build/model provenance are verified.
-The legacy `code_contains_uncommitted_changes: true` receipt field is a
-hardcoded packaging label, not a measured dirty checkout; the independent
-source binding and CI clean-checkout check establish the actual inputs.
+Version 1 wrote the fixed label `code_contains_uncommitted_changes: true`.
+For those archives, the independent file hashes and CI clean-checkout receipt
+establish the source binding. Version 2 records `code_files_match_base_revision`
+by comparing the size and SHA-256 of every captured Code file with its regular
+Git blob at the recorded commit. The host repeats the comparison when it accepts
+the archive. Public CI requires an exact match. Manually captured local changes
+retain their explicit mismatching result.
 
 Original artifact and log ZIP SHA-256 values are respectively
 `abf57ddb609c631746d1d9bcd532a17e73c52d5a321f096eaef3e6a713bf3abe`

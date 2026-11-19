@@ -215,6 +215,8 @@ def capture(model_profile=MODEL, inference_backend='torch'):
     source = json.loads((BUILD / 'ci-source.json').read_text())
     trial.validate_backend_fields(source, profile)
     require(source['code_revision'] == manifest['code_base_revision'] == os.environ['GITHUB_SHA'], 'input_source')
+    if manifest.get('version') == 2:
+        require(manifest['code_files_match_base_revision'] is True, 'input_source')
     require(source['core_revision'] == manifest['core_revision'] == profile['core_revision']
             and source['model_profile'] == manifest['model_profile'] == model_profile, 'input_profile')
     record(BUILD / 'ci-inputs.json', {'version': 1, 'bundle_sha256': digest(path),
