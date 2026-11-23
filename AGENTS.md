@@ -1,10 +1,20 @@
 # VOLPAROSSA Code
 
+Follow the [shared development workflow](https://github.com/VOLPAROSSA/volparossa/blob/main/docs/development/CODEX_WORKFLOW.md) for Codex, OpenCode and other coding agents.
+Start with the user's task and the relevant part of the [README](README.md).
+Choose available models, reasoning effort, tools and any delegation according
+to the task's complexity, risk and cost. Use targeted checks. Run builds and
+runtime trials on approved disposable hosted runners.
+
 - Build on the open-source OpenCode runtime and reuse suitable upstream apps/clients/editor integrations (user revision 2026-10-02). Original integration code is GPL-3.0-only; preserve upstream MIT notices. Codex experiments are historical, not the selected runtime.
 - VOLPAROSSA owns model selection, peer scheduling, cancellation and contribution accounting. Do not add a competing peer coordinator here.
 - Private source, prompts, credentials, tool results and repository history must not be silently published to peers, cache or training. Public work requires explicit scope and consent.
 - Network cooperation and collective improvement are the default architectural goal, including protected execution of private work on other nodes. Local inference is a fallback/development executor, not completion of that requirement. Do not replace real peer collaboration with local subagents or claim that TLS, fragmenting tasks or a peer signature protects inputs from the executing host.
-- No OpenAI authentication, cloud inference fallback or telemetry. Do not use untrusted executable downloads. Task-scoped, pinned and verified source/model acquisition, workspace-local builds and isolated tests are normal authorized development steps, with no separate approval for each download. Global installation or permanent changes outside the workspace require explicit user approval.
+- Keep OpenAI authentication, cloud inference fallback and telemetry out of the product.
+  Acquire only trusted, pinned and verified sources and models for the task.
+  These downloads and isolated builds and tests on approved disposable hosted
+  runners are authorized. Global installation or permanent changes outside the
+  workspace require explicit user approval.
 - Develop product model distribution and release updates under the core's pre-established authorization, with verified provenance, authenticity and integrity, privacy protection and resource limits. This does not authorize installation outside the workspace, wider permissions or claims that an unimplemented update facility already works.
 - Opening a workspace must not start models, commands or network participation. Honor editor workspace trust. Task inputs and workspace/tool scope may be authorized in advance; check every action against that scope and request new authorization for an expansion or an otherwise unauthorized action. Prior authorization is not unrestricted execution authority.
 - OpenCode tool actions remain subject to local workspace/approval boundaries; a model response is not authority to run a command. Core owns immune-policy decisions and executor admission; frontend labels are not an implemented immune system.
