@@ -1,10 +1,6 @@
 # VOLPAROSSA Code
 
-Follow the [shared development workflow](https://github.com/VOLPAROSSA/volparossa/blob/main/docs/development/CODEX_WORKFLOW.md) for Codex, OpenCode and other coding agents.
-Start with the user's task and the relevant part of the [README](README.md).
-Choose available models, reasoning effort, tools and any delegation according
-to the task's complexity, risk and cost. Use targeted checks. Run builds and
-runtime trials on approved disposable hosted runners.
+Follow the [shared development workflow](https://github.com/VOLPAROSSA/volparossa/blob/main/docs/development/WORKFLOW.md).
 
 - Build on the open-source OpenCode runtime and reuse suitable upstream apps/clients/editor integrations (user revision 2026-10-02). Original integration code is GPL-3.0-only; preserve upstream MIT notices. Codex experiments are historical, not the selected runtime.
 - VOLPAROSSA owns model selection, peer scheduling, cancellation and contribution accounting. Do not add a competing peer coordinator here.
